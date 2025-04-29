@@ -38,9 +38,9 @@ export class AuthGuard implements CanActivate {
     try {
       // Verify the token with the auth service
       const authResponse = await this.authService.verifyToken(token);
-      this.logger.debug(
-        `Response from auth service: ${JSON.stringify(authResponse)}`,
-      );
+      // this.logger.debug(
+      //   `Response from auth service: ${JSON.stringify(authResponse)}`,
+      // );
 
       // Attach the user data to the request for use in controllers
       request['authenticatedData'] = authResponse.data;

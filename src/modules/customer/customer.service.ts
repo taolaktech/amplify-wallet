@@ -7,53 +7,50 @@ import {
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
-import { Customer, CustomerDocument } from './schemas/customer.schema';
+import { User, UserDoc } from './schemas/user.schema';
 import Stripe from 'stripe';
 import { CreateCustomerDto } from './dto/create-customer.dto';
 import { UpdateCustomerDto } from './dto/update-customer.dto';
-import { UserDocument } from '../../common/interfaces/request.interface';
+// import { UserDocument } from '../../common/interfaces/request.interface';
 
 @Injectable()
-export class CustomerService {
-  private readonly logger = new Logger(CustomerService.name);
+export class StripeCustomerService {
+  private readonly logger = new Logger(StripeCustomerService.name);
   constructor(
-    @InjectModel(Customer.name) private customerModel: Model<CustomerDocument>,
+    @InjectModel(User.name) private userModel: Model<UserDoc>,
     @Inject('STRIPE_CLIENT') private stripe: Stripe,
   ) {}
 
-  async createStripeCustomer(customer: CreateCustomerDto): Promise<any> {
+  async createStripeCustomer(customer: UserDoc): Promise<any> {
     try {
-      // 1) create in Stripe
+      // 1) Find the user in our database
+      const user = await this.userModel.findById(customer._id);
+
+      if (!user) {
+        throw new NotFoundException(`User not found with ID: ${customer._id}`);
+      }
+
+      // 2) Check if user already has a Stripe customer ID
+      if (user.stripeCustomerId) {
+        // Return the existing Stripe customer
+        return await this.getStripeCustomer(user.stripeCustomerId);
+      }
+
+      // 3) create in Stripe
       const stripeCustomer = await this.stripe.customers.create({
         email: customer.email,
         name: customer.name,
-        ...(Object.keys(customer.metadata).length > 0
-          ? { metadata: customer.metadata }
-          : {}),
       });
 
-      // 2) persist locally
-      const customerData = new this.customerModel({
-        userId: customer._id,
+      // 4) Update user with Stripe customer ID
+      await this.userModel.findByIdAndUpdate(customer._id, {
         stripeCustomerId: stripeCustomer.id,
-        firebaseUserId: customer.firebaseUserId,
-        email: stripeCustomer.email,
-        name: stripeCustomer.name,
-        phone: stripeCustomer.phone,
-        address: stripeCustomer.address,
-        metadata: stripeCustomer.metadata,
-        created: stripeCustomer.created,
-        defaultPaymentMethod: stripeCustomer.invoice_settings
-          .default_payment_method as string,
-        invoiceSettings: stripeCustomer.invoice_settings,
-        currency: stripeCustomer.currency,
-        livemode: stripeCustomer.livemode,
-        delinquent: stripeCustomer.delinquent,
+        lastStripeSync: new Date(),
+        paymentStatus: 'none',
       });
 
-      const newStripeCustomer = await customerData.save();
-
-      return newStripeCustomer;
+      // 5) Return the Stripe customer data
+      return stripeCustomer;
     } catch (error) {
       const message = error?.message ?? 'Error creating customer';
       this.logger.log(`::: Error creating customer: ${error} :::`);
@@ -64,11 +61,50 @@ export class CustomerService {
     }
   }
 
-  async getCustomer(customerId: string): Promise<Customer> {
+  async getStripeCustomer(stripeCustomerId: string): Promise<Stripe.Customer> {
     try {
-      const customer = await this.customerModel.findOne({ userId: customerId });
+      // Fetch customer directly from Stripe
+      return (await this.stripe.customers.retrieve(
+        stripeCustomerId,
+      )) as Stripe.Customer;
+    } catch (error) {
+      const message = error?.message ?? 'Error retrieving customer from Stripe';
+      this.logger.error(
+        `::: Error retrieving customer from Stripe: ${error} :::`,
+      );
+      throw new BadRequestException(message, {
+        cause: error,
+        description: 'Error retrieving customer from Stripe',
+      });
+    }
+  }
 
-      return customer;
+  async getCustomer(userId: string): Promise<Stripe.Customer> {
+    try {
+      // 1) Find the user in our database
+      const user = await this.userModel.findById(userId);
+
+      if (!user) {
+        throw new NotFoundException(`User not found with ID: ${userId}`);
+      }
+
+      if (!user.stripeCustomerId) {
+        throw new NotFoundException(
+          `No Stripe customer found for user ID: ${userId}`,
+        );
+      }
+
+      // 2) Fetch customer directly from Stripe
+      const stripeCustomer = await this.getStripeCustomer(
+        user.stripeCustomerId,
+      );
+
+      // 3) Update last sync timestamp
+      await this.userModel.findByIdAndUpdate(userId, {
+        lastStripeSync: new Date(),
+      });
+
+      return stripeCustomer;
     } catch (error) {
       const message = error?.message ?? 'Error getting customer';
       this.logger.log(`::: Error getting customer: ${error} :::`);
@@ -92,11 +128,11 @@ export class CustomerService {
   async updateStripeCustomer(
     userId: string,
     updateData: UpdateCustomerDto,
-    userData: UserDocument,
-  ): Promise<Customer> {
+    userData: UserDoc,
+  ): Promise<Stripe.Customer> {
     try {
       // 1) Find the customer in our database
-      const customer = await this.customerModel.findOne({ userId });
+      const customer = await this.userModel.findOne({ _id: userId });
 
       if (!customer) {
         throw new NotFoundException(
@@ -147,32 +183,18 @@ export class CustomerService {
         stripeUpdateData,
       );
 
-      // 4) Update our local database
-      // Map Stripe response to our database model
-      const updatedFields = {
-        email: updatedStripeCustomer.email,
-        name: updatedStripeCustomer.name,
-        phone: updatedStripeCustomer.phone,
-        address: updatedStripeCustomer.address,
-        metadata: updatedStripeCustomer.metadata,
-        defaultPaymentMethod: updatedStripeCustomer.invoice_settings
-          ?.default_payment_method as string,
-        invoiceSettings: updatedStripeCustomer.invoice_settings,
-        shipping: updatedStripeCustomer.shipping,
+      // 4) Update our user document with minimal Stripe info
+      const updateFields = {
+        lastStripeSync: new Date(),
       };
 
-      // Update the customer in our database
-      const updatedCustomer = await this.customerModel.findOneAndUpdate(
-        { userId },
-        { $set: updatedFields },
-        { new: true }, // Return the updated document
-      );
-
-      if (!updatedCustomer) {
-        throw new Error('Failed to update customer in database');
+      if (updateData.defaultPaymentMethod) {
+        updateFields['defaultPaymentMethod'] = updateData.defaultPaymentMethod;
       }
 
-      return updatedCustomer;
+      await this.userModel.findByIdAndUpdate(userId, updateFields);
+
+      return updatedStripeCustomer as Stripe.Customer;
     } catch (error) {
       const message = error?.message ?? 'Error updating customer';
       this.logger.error(`::: Error updating customer: ${error} :::`);
@@ -184,34 +206,38 @@ export class CustomerService {
   }
 
   /**
-   * Deletes a customer from both Stripe and the local database
+   * Deletes a customer from Stripe
    * @param userId The ID of the user whose customer record should be deleted
    * @returns A success message
-   * @throws NotFoundException if the customer doesn't exist
+   * @throws NotFoundException if the user or Stripe customer doesn't exist
    * @throws BadRequestException if there's an error during deletion
    */
-  async deleteCustomer(userId: string): Promise<{ success: boolean }> {
+  async deleteStripeCustomer(userId: string): Promise<{ success: boolean }> {
     try {
-      // 1) Find the customer in our database
-      const customer = await this.customerModel.findOne({ userId });
+      // 1) Find the user in our database
+      const user = await this.userModel.findById(userId);
 
-      if (!customer) {
+      if (!user) {
+        throw new NotFoundException(`User not found with ID: ${userId}`);
+      }
+
+      if (!user.stripeCustomerId) {
         throw new NotFoundException(
-          `Customer not found for user ID: ${userId}`,
+          `No Stripe customer found for user ID: ${userId}`,
         );
       }
 
       // 2) Delete the customer from Stripe
       try {
-        await this.stripe.customers.del(customer.stripeCustomerId);
+        await this.stripe.customers.del(user.stripeCustomerId);
         this.logger.log(
-          `Deleted customer ${customer.stripeCustomerId} from Stripe`,
+          `Deleted customer ${user.stripeCustomerId} from Stripe`,
         );
       } catch (stripeError) {
-        // If the customer doesn't exist in Stripe, we can still proceed with local deletion
+        // If the customer doesn't exist in Stripe, we can still proceed with local update
         if (stripeError.code === 'resource_missing') {
           this.logger.warn(
-            `Customer ${customer.stripeCustomerId} not found in Stripe, proceeding with local deletion`,
+            `Customer ${user.stripeCustomerId} not found in Stripe, proceeding with local update`,
           );
         } else {
           // For other Stripe errors, abort the operation
@@ -219,12 +245,14 @@ export class CustomerService {
         }
       }
 
-      // 3) Delete the customer from our database
-      const deleteResult = await this.customerModel.deleteOne({ userId });
-
-      if (deleteResult.deletedCount === 0) {
-        throw new Error('Failed to delete customer from database');
-      }
+      // 3) Update the user to remove Stripe customer ID
+      await this.userModel.findByIdAndUpdate(userId, {
+        stripeCustomerId: null,
+        defaultPaymentMethod: null,
+        hasActiveSubscription: false,
+        paymentStatus: 'none',
+        lastStripeSync: new Date(),
+      });
 
       return {
         success: true,

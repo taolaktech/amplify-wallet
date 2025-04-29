@@ -11,38 +11,37 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { AuthGuard } from '../../common/guards/auth.guard';
-import { CustomerService } from './customer.service';
+import { StripeCustomerService } from './customer.service';
 import { CreateCustomerDto } from './dto/create-customer.dto';
 import { ApiResult } from '../../common/interfaces/response.interface';
 import { ExtendedRequest } from '../../common/interfaces/request.interface';
-import { Customer } from './schemas/customer.schema';
+// import { Customer } from './schemas/customer.schema';
 import { ApiTags, ApiBearerAuth, ApiBody, ApiResponse } from '@nestjs/swagger';
 import { UpdateCustomerDto } from './dto/update-customer.dto';
+import Stripe from 'stripe';
+import { UserDoc } from './schemas/user.schema';
 
-@ApiTags('customers')
+@ApiTags('stripe-customers')
 @ApiBearerAuth()
 @UseGuards(AuthGuard)
-@Controller('customers')
-export class CustomerController {
-  constructor(private readonly customerService: CustomerService) {}
+@Controller('stripe/customers')
+export class StripeCustomerController {
+  constructor(private readonly customerService: StripeCustomerService) {}
 
   @Post('create')
   @HttpCode(HttpStatus.CREATED)
   @ApiBody({ type: CreateCustomerDto, description: 'Stripe Customer details' })
-  async createCustomer(
+  async createStripeCustomer(
     @Body() customerDetails: CreateCustomerDto,
     @Req() request: ExtendedRequest,
-  ): Promise<ApiResult<Customer>> {
+  ): Promise<ApiResult<Stripe.Customer>> {
     const user = request['authenticatedData'];
 
-    const customer = await this.customerService.createStripeCustomer({
-      ...customerDetails,
-      ...user,
-    });
+    const customer = await this.customerService.createStripeCustomer(user);
 
     return {
       success: true,
-      message: 'Customer created successfully',
+      message: 'Stripe customer created successfully',
       data: customer,
     };
   }
@@ -55,23 +54,23 @@ export class CustomerController {
   })
   @ApiResponse({
     status: HttpStatus.OK,
-    description: 'Customer updated successfully',
+    description: 'Stripe customer updated successfully',
   })
-  async updateCustomer(
+  async updateStripeCustomer(
     @Body() updateData: UpdateCustomerDto,
     @Req() request: ExtendedRequest,
-  ): Promise<ApiResult<Customer>> {
+  ): Promise<ApiResult<Stripe.Customer>> {
     const user = request['authenticatedData'];
 
     const updatedCustomer = await this.customerService.updateStripeCustomer(
-      user._id,
+      user._id.toString(),
       updateData,
       user,
     );
 
     return {
       success: true,
-      message: 'Customer updated successfully',
+      message: 'Stripe customer updated successfully',
       data: updatedCustomer,
     };
   }
@@ -80,14 +79,16 @@ export class CustomerController {
   @HttpCode(HttpStatus.OK)
   @ApiResponse({
     status: HttpStatus.OK,
-    description: 'Customer retrieved successfully',
+    description: 'Stripe customer retrieved successfully',
   })
-  async getCustomer(
+  async getStripeCustomer(
     @Req() request: ExtendedRequest,
-  ): Promise<ApiResult<Customer>> {
+  ): Promise<ApiResult<Stripe.Customer>> {
     const user = request['authenticatedData'];
 
-    const customer = await this.customerService.getCustomer(user._id);
+    const customer = await this.customerService.getCustomer(
+      user._id.toString(),
+    );
 
     return {
       success: true,
@@ -100,22 +101,24 @@ export class CustomerController {
   @HttpCode(HttpStatus.OK)
   @ApiResponse({
     status: HttpStatus.OK,
-    description: 'Customer deleted successfully',
+    description: 'Stripe customer deleted successfully',
   })
   @ApiResponse({
     status: HttpStatus.NOT_FOUND,
-    description: 'Customer not found',
+    description: 'Stripe customer not found',
   })
   @ApiResponse({
     status: HttpStatus.BAD_REQUEST,
-    description: 'Error deleting customer',
+    description: 'Error deleting stripe customer',
   })
   async deleteCustomer(
     @Req() request: ExtendedRequest,
   ): Promise<ApiResult<null>> {
     const user = request['authenticatedData'];
 
-    const result = await this.customerService.deleteCustomer(user._id);
+    const result = await this.customerService.deleteStripeCustomer(
+      user._id.toString(),
+    );
 
     return {
       success: result.success,
