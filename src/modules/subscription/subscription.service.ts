@@ -4,6 +4,7 @@ import {
   Logger,
   NotFoundException,
   BadRequestException,
+  HttpException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
@@ -37,9 +38,8 @@ export class SubscriptionService {
     price_1RJOWj4K0EUJXpsuQ3rqPxEU: 'price_1RJPa44K0EUJXpsuMndP6MZx',
     price_1RJP4F4K0EUJXpsupXziADUr: 'price_1RJPa44K0EUJXpsuMndP6MZx',
     price_1RJP5L4K0EUJXpsuP0J14AlF: 'price_1RJPa44K0EUJXpsuMndP6MZx',
-    // --- Free Plan (Example: Assumes free plan has NO billable commission price) ---
-    price_1RJOC84K0EUJXpsuHnFOBtZf: 'price_1RJP6w4K0EUJXpsu4Pb5Eyt0', // null,
-    // Add other Price IDs if necessary
+    // --- Free Plan ---
+    price_1RJOC84K0EUJXpsuHnFOBtZf: 'price_1RJP6w4K0EUJXpsu4Pb5Eyt0',
   };
 
   /**
@@ -90,7 +90,6 @@ export class SubscriptionService {
         this.logger.log(
           `Created new Stripe Customer ID: ${stripeCustomerId} for user ${userId}`,
         );
-        // The createStripeCustomer method already updates the userModel in its implementation
       }
 
       // 3. Handle Payment Method attachment (if provided)
@@ -169,7 +168,6 @@ export class SubscriptionService {
         );
       }
 
-      // 5. Create the subscription in Stripe using stripe.subscriptions.create()
       // 5. Prepare Subscription Items array
       const subscriptionItems: Stripe.SubscriptionCreateParams.Item[] = [
         { price: priceId }, // Always include the base price
@@ -187,11 +185,11 @@ export class SubscriptionService {
       const subscriptionParams: Stripe.SubscriptionCreateParams = {
         customer: stripeCustomerId,
         items: subscriptionItems,
-        // Expand necessary objects to check status immediately after creation
+        // Expand necessary objects
         expand: ['latest_invoice', 'pending_setup_intent'],
         // Automatically charge the default payment method
         collection_method: 'charge_automatically',
-        // Optional: Add metadata to link Stripe Subscription back to your user
+        //Add metadata to link Stripe Subscription back to your user
         metadata: {
           localUserId: userId,
         },
@@ -209,7 +207,7 @@ export class SubscriptionService {
       );
 
       // 8. Check Initial Payment Status (if applicable)
-      //    This is crucial for paid plans to ensure the first payment went through or handle required actions.
+      // This is crucial for paid plans to ensure the first payment went through or handle required actions.
       const latestInvoice = stripeSubscription.latest_invoice as Stripe.Invoice;
       const paymentIntent = latestInvoice?.last_finalization_error
         ?.payment_intent as Stripe.PaymentIntent;
@@ -277,11 +275,7 @@ export class SubscriptionService {
         `Failed to create subscription for user ${userId}: ${error.message}`,
         error.stack,
       );
-      // Re-throw specific errors or a generic one
-      if (
-        error instanceof NotFoundException ||
-        error instanceof BadRequestException
-      ) {
+      if (error instanceof HttpException) {
         throw error;
       }
       throw new BadRequestException(
