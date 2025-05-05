@@ -6,11 +6,11 @@ import Stripe from 'stripe';
   providers: [
     {
       provide: 'STRIPE_CLIENT',
-      useFactory: (cfg: ConfigService) =>
-        new Stripe(cfg.get('stripe.secretKey'), {
+      useFactory: () => {
+        return new Stripe(process.env.STRIPE_API_KEY, {
           apiVersion: '2025-03-31.basil',
-        }),
-      inject: [ConfigService],
+        });
+      },
     },
   ],
   exports: ['STRIPE_CLIENT'],
