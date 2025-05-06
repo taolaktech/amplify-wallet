@@ -23,25 +23,6 @@ export class SubscriptionService {
     private readonly stripeCustomerService: StripeCustomerService,
   ) {}
 
-  // Helper mapping base Price IDs to their corresponding Commission Price IDs
-  // IMPORTANT: Use the actual Price IDs you created in your Stripe Dashboard!
-  private commissionPriceMap: Record<string, string | null> = {
-    // --- Starter Plan ---
-    price_1RJOIF4K0EUJXpsuXoWVsLvI: 'price_1RJP6w4K0EUJXpsu4Pb5Eyt0',
-    price_1RJOsq4K0EUJXpsut6AGoSqQ: 'price_1RJP6w4K0EUJXpsu4Pb5Eyt0',
-    price_1RJOvK4K0EUJXpsu9JjKZk5q: 'price_1RJP6w4K0EUJXpsu4Pb5Eyt0',
-    // --- Grow Plan ---
-    price_1RJORI4K0EUJXpsuA3Uc1yff: 'price_1RJPYi4K0EUJXpsuPrnE0F0R',
-    price_1RJOzX4K0EUJXpsuhbvXdRFy: 'price_1RJPYi4K0EUJXpsuPrnE0F0R',
-    price_1RJP0t4K0EUJXpsuGrlrCi0Z: 'price_1RJPYi4K0EUJXpsuPrnE0F0R',
-    // --- Scale Plan ---
-    price_1RJOWj4K0EUJXpsuQ3rqPxEU: 'price_1RJPa44K0EUJXpsuMndP6MZx',
-    price_1RJP4F4K0EUJXpsupXziADUr: 'price_1RJPa44K0EUJXpsuMndP6MZx',
-    price_1RJP5L4K0EUJXpsuP0J14AlF: 'price_1RJPa44K0EUJXpsuMndP6MZx',
-    // --- Free Plan ---
-    price_1RJOC84K0EUJXpsuHnFOBtZf: 'price_1RJP6w4K0EUJXpsu4Pb5Eyt0',
-  };
-
   /**
    * Creates a Stripe subscription for a user.
    * @param userId The ID of the user in your local database.
@@ -145,38 +126,11 @@ export class SubscriptionService {
         );
       }
 
-      // 4. Determine the correct Commission Price ID based on the base priceId
-      const commissionPriceId = this.commissionPriceMap[priceId];
-
-      // Validate that the base priceId exists in our mapping
-      if (typeof commissionPriceId === 'undefined') {
-        this.logger.error(
-          `Invalid or unmapped base Price ID provided: ${priceId}`,
-        );
-        throw new BadRequestException(
-          `Invalid subscription plan selected: ${priceId}.`,
-        );
-      }
-
-      if (commissionPriceId) {
-        this.logger.log(
-          `Found corresponding Commission Price ID: ${commissionPriceId} for base Price ID: ${priceId}`,
-        );
-      } else {
-        this.logger.log(
-          `No corresponding Commission Price ID found or needed for base Price ID: ${priceId} (e.g., Free Plan)`,
-        );
-      }
-
       // 5. Prepare Subscription Items array
       const subscriptionItems: Stripe.SubscriptionCreateParams.Item[] = [
         { price: priceId }, // Always include the base price
       ];
 
-      if (commissionPriceId) {
-        // Only add the commission item if it's applicable for the plan
-        subscriptionItems.push({ price: commissionPriceId });
-      }
       this.logger.log(
         `Preparing to create subscription with items: ${JSON.stringify(subscriptionItems)}`,
       );
