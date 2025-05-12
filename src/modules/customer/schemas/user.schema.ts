@@ -39,6 +39,18 @@ export class User {
   @Prop({ unique: true, sparse: true })
   stripeCustomerId?: string;
 
+  @Prop({ unique: true, sparse: true }) // Stores active sub ID like 'sub_...'
+  stripeSubscriptionId?: string;
+
+  @Prop() // Stores the Price ID of the active base plan like 'price_...'
+  activeStripePriceId?: string;
+
+  @Prop() // Stores Stripe status like 'active', 'trialing', 'past_due', 'canceled'
+  subscriptionStatus?: string;
+
+  @Prop({ type: Date }) // Stores end date of current billing cycle
+  currentPeriodEnd?: Date;
+
   @Prop()
   defaultPaymentMethod?: string;
 

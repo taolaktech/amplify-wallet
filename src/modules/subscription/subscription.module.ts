@@ -1,9 +1,10 @@
 import { Module } from '@nestjs/common';
-import { StripeCustomerService } from './customer.service';
-import { StripeCustomerController } from './customer.controller';
-import { MongooseModule } from '@nestjs/mongoose';
-import { User, UserSchema } from './schemas/user.schema';
+import { SubscriptionService } from './subscription.service';
 import { StripeModule } from '../stripe/stripe.module';
+import { SubscriptionController } from './subscription.controller';
+import { MongooseModule } from '@nestjs/mongoose';
+import { User, UserSchema } from '../customer/schemas/user.schema';
+import { CustomerModule } from '../customer/customer.module';
 import { AuthService } from '../auth/auth.service';
 import { InternalHttpHelper } from '../../common/helpers/internal-http.helper';
 import { ServiceRegistryService } from '../../common/services/service-registry.service';
@@ -12,14 +13,15 @@ import { ServiceRegistryService } from '../../common/services/service-registry.s
   imports: [
     MongooseModule.forFeature([{ name: User.name, schema: UserSchema }]),
     StripeModule,
+    CustomerModule,
   ],
   providers: [
-    StripeCustomerService,
     AuthService,
     InternalHttpHelper,
     ServiceRegistryService,
+    SubscriptionService,
   ],
-  controllers: [StripeCustomerController],
-  exports: [StripeCustomerService],
+  exports: [SubscriptionService],
+  controllers: [SubscriptionController],
 })
-export class CustomerModule {}
+export class SubscriptionModule {}
