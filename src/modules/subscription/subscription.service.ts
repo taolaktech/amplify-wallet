@@ -29,200 +29,206 @@ export class SubscriptionService {
    * @param createSubscriptionDto DTO containing the Price ID and optional Payment Method ID.
    * @returns The created Stripe Subscription object.
    */
+  private async findAndValidateUser(userId: string): Promise<UserDoc> {
+    const user = await this.userModel
+      .findById(userId)
+      .select('+stripeCustomerId')
+      .exec();
+    if (!user) {
+      this.logger.error(`User not found with ID: ${userId}`);
+      throw new NotFoundException(`User not found with ID: ${userId}`);
+    }
+    return user;
+  }
+
+  private async getOrCreateStripeCustomerId(user: UserDoc): Promise<string> {
+    if (user.stripeCustomerId) {
+      this.logger.log(
+        `Found existing Stripe Customer ID: ${user.stripeCustomerId} for user ${user._id}`,
+      );
+      return user.stripeCustomerId;
+    }
+
+    this.logger.log(
+      `No Stripe Customer ID found for user ${user._id}. Creating new Stripe Customer...`,
+    );
+    const newStripeCustomer =
+      await this.stripeCustomerService.createStripeCustomer(user);
+    this.logger.log(
+      `Created new Stripe Customer ID: ${newStripeCustomer.id} for user ${user._id}`,
+    );
+    return newStripeCustomer.id;
+  }
+
+  private async handlePaymentMethod(
+    paymentMethodId: string | undefined,
+    stripeCustomerId: string,
+    userId: string,
+  ): Promise<void> {
+    if (!paymentMethodId) {
+      this.logger.log(
+        `No new PaymentMethod ID provided for customer ${stripeCustomerId}. Using existing default if available.`,
+      );
+      return;
+    }
+
+    this.logger.log(
+      `PaymentMethod ID ${paymentMethodId} provided. Attaching to customer ${stripeCustomerId}...`,
+    );
+    try {
+      const attachedPaymentMethod = await this.stripe.paymentMethods.attach(
+        paymentMethodId,
+        { customer: stripeCustomerId },
+      );
+
+      const actualAttachedPmId = attachedPaymentMethod.id;
+      this.logger.log(
+        `Successfully attached PaymentMethod ${paymentMethodId} to ${actualAttachedPmId}`,
+      );
+
+      await this.stripe.customers.update(stripeCustomerId, {
+        invoice_settings: { default_payment_method: actualAttachedPmId },
+      });
+      this.logger.log(
+        `Set PaymentMethod ${actualAttachedPmId} as default for ${stripeCustomerId}`,
+      );
+
+      await this.userModel.findByIdAndUpdate(userId, {
+        defaultPaymentMethod: actualAttachedPmId,
+        lastStripeSync: new Date(),
+      });
+      this.logger.log(
+        `Updated local user ${userId} default payment method ID to ${actualAttachedPmId}.`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Failed to attach/set default PaymentMethod (Input ID: ${paymentMethodId}) for customer ${stripeCustomerId}: ${error.message}`,
+        error.stack,
+      );
+      throw new BadRequestException(
+        `Failed to set up payment method: ${error.message}`,
+      );
+    }
+  }
+
+  private createSubscriptionParams(
+    stripeCustomerId: string,
+    priceId: string,
+    userId: string,
+  ): Stripe.SubscriptionCreateParams {
+    const subscriptionItems: Stripe.SubscriptionCreateParams.Item[] = [
+      { price: priceId },
+    ];
+
+    return {
+      customer: stripeCustomerId,
+      items: subscriptionItems,
+      expand: ['latest_invoice', 'pending_setup_intent'],
+      collection_method: 'charge_automatically',
+      metadata: { localUserId: userId },
+    };
+  }
+
+  private async validatePaymentStatus(
+    stripeSubscription: Stripe.Subscription,
+  ): Promise<void> {
+    const latestInvoice = stripeSubscription.latest_invoice as Stripe.Invoice;
+    const paymentIntent = latestInvoice?.last_finalization_error
+      ?.payment_intent as Stripe.PaymentIntent;
+
+    if (paymentIntent) {
+      if (
+        paymentIntent.status == 'requires_payment_method' ||
+        paymentIntent.status == 'requires_action'
+      ) {
+        this.logger.error(
+          `Initial payment for subscription ${stripeSubscription.id} requires action or failed. Status: ${paymentIntent.status}`,
+        );
+        throw new BadRequestException(
+          `Payment required or needs further action. Status: ${paymentIntent.status}`,
+        );
+      }
+    } else if (stripeSubscription.status === 'incomplete') {
+      this.logger.warn(
+        `Subscription ${stripeSubscription.id} created with status 'incomplete'. Payment may be required.`,
+      );
+      throw new BadRequestException({
+        message:
+          'Subscription created but payment is incomplete. Please check payment details.',
+        code: 'incomplete_payment',
+        subscriptionId: stripeSubscription.id,
+      });
+    }
+  }
+
+  private async updateLocalUserSubscription(
+    userId: string,
+    stripeSubscription: Stripe.Subscription,
+    priceId: string,
+  ): Promise<void> {
+    const updateData = {
+      stripeSubscriptionId: stripeSubscription.id,
+      subscriptionStatus: stripeSubscription.status,
+      paymentStatus:
+        stripeSubscription.status === 'past_due'
+          ? 'past_due'
+          : stripeSubscription.status === 'active' ||
+            stripeSubscription.status === 'trialing'
+            ? 'active'
+            : 'none',
+      activeStripePriceId: priceId,
+      currentPeriodEnd: new Date(
+        stripeSubscription?.items?.data[0].current_period_end * 1000,
+      ),
+      hasActiveSubscription: ['active', 'trialing'].includes(
+        stripeSubscription.status,
+      ),
+      lastStripeSync: new Date(),
+    };
+
+    this.logger.log(
+      `Updating local user ${userId} with subscription data: ${JSON.stringify(updateData)}`,
+    );
+    await this.userModel.findByIdAndUpdate(userId, updateData);
+    this.logger.log(`Successfully updated user ${userId} in local database.`);
+  }
+
   async createSubscription(
     userId: string,
     createSubscriptionDto: CreateSubscriptionDto,
   ): Promise<Stripe.Subscription> {
-    // We will return the Stripe.Subscription object
     const { priceId, paymentMethodId } = createSubscriptionDto;
     this.logger.log(
       `Attempting to create subscription for user ${userId} with price ${priceId}`,
     );
 
-    let stripeCustomerId: string;
-
     try {
-      // 1. Find the user in the local database
-      const user = await this.userModel
-        .findById(userId)
-        .select('+stripeCustomerId')
-        .exec(); // Ensure stripeCustomerId is selected if needed
-      if (!user) {
-        this.logger.error(`User not found with ID: ${userId}`);
-        throw new NotFoundException(`User not found with ID: ${userId}`);
-      }
+      const user = await this.findAndValidateUser(userId);
+      const stripeCustomerId = await this.getOrCreateStripeCustomerId(user);
+      await this.handlePaymentMethod(paymentMethodId, stripeCustomerId, userId);
 
-      // 2. Get or Create Stripe Customer ID
-      if (user.stripeCustomerId) {
-        stripeCustomerId = user.stripeCustomerId;
-        this.logger.log(
-          `Found existing Stripe Customer ID: ${stripeCustomerId} for user ${userId}`,
-        );
-        // Optional: Verify customer exists in Stripe here if paranoid
-        // try { await this.stripeCustomerService.getStripeCustomer(stripeCustomerId); } catch (e) { ... }
-      } else {
-        this.logger.log(
-          `No Stripe Customer ID found for user ${userId}. Creating new Stripe Customer...`,
-        );
-        // Use the injected StripeCustomerService to create the customer
-        const newStripeCustomer =
-          await this.stripeCustomerService.createStripeCustomer(user);
-        stripeCustomerId = newStripeCustomer.id;
-        this.logger.log(
-          `Created new Stripe Customer ID: ${stripeCustomerId} for user ${userId}`,
-        );
-      }
-
-      // 3. Handle Payment Method attachment (if provided)
-      if (paymentMethodId) {
-        this.logger.log(
-          `PaymentMethod ID ${paymentMethodId} provided. Attaching to customer ${stripeCustomerId}...`,
-        );
-        try {
-          // Attach the payment method to the customer
-          const attachedPaymentMethod = await this.stripe.paymentMethods.attach(
-            paymentMethodId,
-            {
-              customer: stripeCustomerId,
-            },
-          );
-
-          // get the attached payment method id returned from stripe
-          const actualAttachedPmId = attachedPaymentMethod.id;
-
-          this.logger.log(
-            `Successfully attached PaymentMethod ${paymentMethodId} to ${actualAttachedPmId}`,
-          );
-
-          // Set it as the default payment method for future invoices (important for recurring payments)
-          await this.stripe.customers.update(stripeCustomerId, {
-            invoice_settings: { default_payment_method: actualAttachedPmId },
-          });
-          this.logger.log(
-            `Set PaymentMethod ${actualAttachedPmId} as default for ${stripeCustomerId}`,
-          );
-          // Optionally update local user record with default PM ID here or rely on webhook
-          await this.userModel.findByIdAndUpdate(userId, {
-            defaultPaymentMethod: actualAttachedPmId,
-            lastStripeSync: new Date(),
-          });
-          this.logger.log(
-            `Updated local user ${userId} default payment method ID to ${actualAttachedPmId}.`,
-          );
-        } catch (error) {
-          this.logger.error(
-            `Failed to attach/set default PaymentMethod (Input ID: ${paymentMethodId}) for customer ${stripeCustomerId}: ${error.message}`, // Log input ID too
-            error.stack,
-          );
-          throw new BadRequestException(
-            `Failed to set up payment method: ${error.message}`,
-          );
-        }
-      } else {
-        // If no payment method is provided now, Stripe will try to use the customer's existing default.
-        // If it's a paid plan and there's no default, the subscription creation might fail (or go to 'incomplete').
-        this.logger.log(
-          `No new PaymentMethod ID provided for customer ${stripeCustomerId}. Using existing default if available.`,
-        );
-      }
-
-      // 5. Prepare Subscription Items array
-      const subscriptionItems: Stripe.SubscriptionCreateParams.Item[] = [
-        { price: priceId }, // Always include the base price
-      ];
-
-      this.logger.log(
-        `Preparing to create subscription with items: ${JSON.stringify(subscriptionItems)}`,
+      const subscriptionParams = this.createSubscriptionParams(
+        stripeCustomerId,
+        priceId,
+        userId,
       );
 
-      // 6. Prepare Subscription Creation Parameters
-      const subscriptionParams: Stripe.SubscriptionCreateParams = {
-        customer: stripeCustomerId,
-        items: subscriptionItems,
-        // Expand necessary objects
-        expand: ['latest_invoice', 'pending_setup_intent'],
-        // Automatically charge the default payment method
-        collection_method: 'charge_automatically',
-        //Add metadata to link Stripe Subscription back to your user
-        metadata: {
-          localUserId: userId,
-        },
-      };
-
-      // 7. Create the subscription in Stripe
       this.logger.log(
         `Creating Stripe subscription for customer ${stripeCustomerId}...`,
       );
       const stripeSubscription =
         await this.stripe.subscriptions.create(subscriptionParams);
-
       this.logger.log(
         `Successfully created Stripe subscription ${stripeSubscription.id}`,
       );
 
-      // 8. Check Initial Payment Status (if applicable)
-      // This is crucial for paid plans to ensure the first payment went through or handle required actions.
-      const latestInvoice = stripeSubscription.latest_invoice as Stripe.Invoice;
-      const paymentIntent = latestInvoice?.last_finalization_error
-        ?.payment_intent as Stripe.PaymentIntent;
-
-      if (paymentIntent) {
-        if (
-          paymentIntent.status == 'requires_payment_method' ||
-          paymentIntent.status == 'requires_action'
-        ) {
-          this.logger.error(
-            `Initial payment for subscription ${stripeSubscription.id} requires action or failed. Status: ${paymentIntent.status}`,
-          );
-          // Depending on desired UX, you might update local status to 'incomplete' instead of throwing
-          throw new BadRequestException(
-            `Payment required or needs further action. Status: ${paymentIntent.status}`,
-          );
-        }
-      } else if (stripeSubscription.status === 'incomplete') {
-        // Handle cases where subscription goes directly into 'incomplete' status
-        this.logger.warn(
-          `Subscription ${stripeSubscription.id} created with status 'incomplete'. Payment may be required.`,
-        );
-
-        // If we couldn't determine a specific action, return a generic message
-        throw new BadRequestException({
-          message:
-            'Subscription created but payment is incomplete. Please check payment details.',
-          code: 'incomplete_payment',
-          subscriptionId: stripeSubscription.id,
-        });
-      }
-
-      // 9. Update local database (User or dedicated Subscription record)
-      const updateData = {
-        stripeSubscriptionId: stripeSubscription.id,
-        // Use the status from the created subscription ('active', 'trialing', 'incomplete', etc.)
-        subscriptionStatus: stripeSubscription.status, // Using a dedicated field is clearer
-        paymentStatus:
-          stripeSubscription.status === 'past_due'
-            ? 'past_due' // Update paymentStatus too
-            : stripeSubscription.status === 'active' ||
-                stripeSubscription.status === 'trialing'
-              ? 'active'
-              : 'none',
-        activeStripePriceId: priceId, // Store the base price ID user subscribed to
-        currentPeriodEnd: new Date(
-          stripeSubscription?.items?.data[0].current_period_end * 1000,
-        ), // Convert Stripe timestamp
-        hasActiveSubscription: ['active', 'trialing'].includes(
-          stripeSubscription.status,
-        ), // Determine based on status
-        lastStripeSync: new Date(),
-      };
-
-      this.logger.log(
-        `Updating local user ${userId} with subscription data: ${JSON.stringify(updateData)}`,
+      await this.validatePaymentStatus(stripeSubscription);
+      await this.updateLocalUserSubscription(
+        userId,
+        stripeSubscription,
+        priceId,
       );
-      await this.userModel.findByIdAndUpdate(userId, updateData);
-      this.logger.log(`Successfully updated user ${userId} in local database.`);
 
-      // 10. Return the created Stripe Subscription object
       return stripeSubscription;
     } catch (error) {
       this.logger.error(

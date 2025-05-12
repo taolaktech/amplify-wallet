@@ -83,7 +83,7 @@ export class StripeCustomerController {
     };
   }
 
-  @Get('me')
+  @Get()
   @HttpCode(HttpStatus.OK)
   @ApiResponse({
     status: HttpStatus.OK,
@@ -105,7 +105,7 @@ export class StripeCustomerController {
     };
   }
 
-  @Delete('me')
+  @Delete()
   @HttpCode(HttpStatus.OK)
   @ApiResponse({
     status: HttpStatus.OK,
@@ -135,7 +135,7 @@ export class StripeCustomerController {
     };
   }
 
-  @Get('me/payment-methods')
+  @Get('/payment-methods')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: "List authenticated user's saved payment methods (cards)",
@@ -158,7 +158,7 @@ export class StripeCustomerController {
     };
   }
 
-  @Post('me/setup-intent')
+  @Post('/setup-intent')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'Create a SetupIntent to add a new payment method' })
   @ApiResponse({
@@ -180,7 +180,7 @@ export class StripeCustomerController {
     };
   }
 
-  @Put('me/payment-methods/set-default')
+  @Put('/payment-methods/set-default')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Set a default payment method for the authenticated user',
@@ -207,7 +207,7 @@ export class StripeCustomerController {
     };
   }
 
-  @Delete('me/payment-methods/:pmId')
+  @Delete('/payment-methods/:pmId')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Detach (delete) a saved payment method' })
   @ApiResponse({
