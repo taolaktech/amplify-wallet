@@ -4,9 +4,18 @@ import { GlobalExceptionFilter } from './common/filters/global-exception.filter'
 import { validationConfig } from './config/validation.config';
 import helmet from 'helmet';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import * as bodyParser from 'body-parser';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+
+  app.use(
+    bodyParser.json({
+      verify: (req: any, res, buf) => {
+        req.rawBody = buf;
+      },
+    }),
+  );
 
   app.enableCors();
   // add helmet middleware
