@@ -26,16 +26,4 @@ export class ChangePlanDto {
   @IsOptional()
   @IsEnum(ProrationBehavior)
   prorationBehavior?: ProrationBehavior = ProrationBehavior.CREATE_PRORATIONS; // Default value
-
-  // You could also add an optional field for billing_cycle_anchor if you want to allow
-  // the frontend to specify if the billing cycle should reset.
-  // @ApiProperty({
-  //   description: "Whether to reset the billing cycle anchor to 'now' or keep it 'unchanged'. Defaults to 'unchanged'.",
-  //   example: 'now',
-  //   enum: ['now', 'unchanged'],
-  //   required: false,
-  // })
-  // @IsOptional()
-  // @IsEnum(['now', 'unchanged'])
-  // billingCycleAnchor?: 'now' | 'unchanged';
 }
