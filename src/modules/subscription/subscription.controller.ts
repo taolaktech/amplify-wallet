@@ -4,6 +4,7 @@ import {
   HttpCode,
   HttpStatus,
   Post,
+  Put,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -20,6 +21,7 @@ import { ExtendedRequest } from '../../common/interfaces/request.interface';
 import { CreateSubscriptionDto } from './dto/create-subscription.dto';
 import { SubscriptionService } from './subscription.service';
 import Stripe from 'stripe';
+import { ChangePlanDto } from './dto/change-subscription.dto';
 
 @ApiTags('stripe-subscriptions')
 @ApiBearerAuth()
@@ -80,6 +82,51 @@ export class SubscriptionController {
       success: true,
       message: message,
       data: stripeSubscription,
+    };
+  }
+
+  @Put('change-plan')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Change (upgrade/downgrade) the authenticated user\'s active subscription plan' })
+  @ApiBody({
+    type: ChangePlanDto,
+    description: 'Details of the new plan to switch to.',
+  })
+  @ApiResponse({
+    status: HttpStatus.OK,
+    description: 'Subscription plan change initiated successfully. Check status for outcome.',
+  })
+  @ApiResponse({
+    status: HttpStatus.BAD_REQUEST,
+    description: 'Invalid input, no active subscription, or other update error.',
+  })
+  @ApiResponse({
+    status: HttpStatus.NOT_FOUND,
+    description: 'User or active subscription not found.',
+  })
+  async changePlan(
+    @Req() request: ExtendedRequest,
+    @Body() changePlanDto: ChangePlanDto,
+  ): Promise<ApiResult<Stripe.Subscription>> {
+    const user = request['authenticatedData'];
+    const userId = user._id.toString();
+
+    const updatedStripeSubscription = await this.subscriptionService.changeSubscriptionPlan(
+      userId,
+      changePlanDto,
+    );
+    
+    let message = 'Subscription plan change initiated successfully.';
+    if (updatedStripeSubscription.status === 'active') {
+        message = 'Subscription plan updated and active.';
+    } else if (updatedStripeSubscription.status === 'past_due') {
+        message = 'Subscription plan updated, but an immediate payment is past due.';
+    }
+
+    return {
+      success: true,
+      message: message,
+      data: updatedStripeSubscription
     };
   }
 }

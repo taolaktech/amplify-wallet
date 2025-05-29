@@ -12,6 +12,7 @@ import Stripe from 'stripe';
 import { User, UserDoc } from '../customer/schemas/user.schema';
 import { StripeCustomerService } from '../customer/customer.service';
 import { CreateSubscriptionDto } from './dto/create-subscription.dto';
+import { ChangePlanDto } from './dto/change-subscription.dto';
 
 @Injectable()
 export class SubscriptionService {
@@ -240,6 +241,147 @@ export class SubscriptionService {
       }
       throw new BadRequestException(
         `Could not create subscription: ${error.message}`,
+      );
+    }
+  }
+
+   /**
+   * Changes an existing subscription to a new plan.
+   * @param userId The ID of the user in your local database.
+   * @param changePlanDto DTO containing the new Price ID and proration behavior.
+   * @returns The updated Stripe Subscription object.
+   */
+   async changeSubscriptionPlan(
+    userId: string,
+    changePlanDto: ChangePlanDto,
+  ): Promise<Stripe.Subscription> {
+    const { newPriceId, prorationBehavior } = changePlanDto;
+
+    this.logger.log(
+      `Attempting to change subscription for user ${userId} to new price ${newPriceId} with proration ${prorationBehavior}`,
+    );
+
+    try {
+      // 1. Find the user and their current active Stripe Subscription ID from your DB
+      const user = await this.userModel.findById(userId)
+        .select('stripeCustomerId stripeSubscriptionId activeStripePriceId') // Select necessary fields
+        .exec();
+
+      if (!user) {
+        this.logger.error(`User not found with ID: ${userId} for plan change.`);
+        throw new NotFoundException(`User not found with ID: ${userId}.`);
+      }
+
+      if (!user.stripeSubscriptionId) {
+        this.logger.warn(`User ${userId} does not have an active Stripe subscription to change.`);
+        throw new BadRequestException('No active subscription found to change.');
+      }
+
+      if (!user.stripeCustomerId) {
+        this.logger.error(`User ${userId} has a subscription ID but no Stripe Customer ID. Data inconsistency.`);
+        throw new BadRequestException('Customer configuration error.');
+      }
+      
+      if (user.activeStripePriceId === newPriceId) {
+        this.logger.warn(`User ${userId} is already subscribed to price ${newPriceId}. No change needed.`);
+        // Retrieve and return the current subscription as no change is made
+        return this.stripe.subscriptions.retrieve(user.stripeSubscriptionId);
+      }
+
+      // 2. Retrieve the current subscription from Stripe to get its items
+      // This is crucial to find the ID of the subscription item to update.
+      let currentSubscription: Stripe.Subscription;
+      try {
+        currentSubscription = await this.stripe.subscriptions.retrieve(
+          user.stripeSubscriptionId,
+          { expand: ['items'] }, // Expand items to get their IDs
+        );
+      } catch (error) {
+        this.logger.error(`Failed to retrieve current subscription ${user.stripeSubscriptionId} from Stripe: ${error.message}`, error.stack);
+        if (error.code === 'resource_missing') {
+            // Local DB might be out of sync. Clear local subscription data.
+            await this.userModel.findByIdAndUpdate(userId, {
+                stripeSubscriptionId: null,
+                activeStripePriceId: null,
+                subscriptionStatus: 'canceled', // Or some other inactive status
+                hasActiveSubscription: false,
+            });
+            throw new NotFoundException('Active subscription not found in Stripe. Please subscribe first.');
+        }
+        throw new BadRequestException(`Could not retrieve current subscription details: ${error.message}`);
+      }
+
+      if (!currentSubscription.items || currentSubscription.items.data.length === 0) {
+        this.logger.error(`Subscription ${user.stripeSubscriptionId} has no items. Cannot update.`);
+        throw new BadRequestException('Current subscription has no items to update.');
+      }
+
+      /**
+       * Assuming the base plan is the first item (or the only item since commission is
+       * separate)
+       * If you had multiple items, you'd need more sophisticated logic to find the
+       * correct one.
+       */
+      const currentSubscriptionItemId = currentSubscription.items.data[0].id;
+      if (!currentSubscriptionItemId) {
+          this.logger.error(`Could not find a subscription item ID for subscription ${user.stripeSubscriptionId}.`);
+          throw new BadRequestException('Cannot identify the current subscription item to update.');
+      }
+
+      this.logger.log(`Found current subscription item ID: ${currentSubscriptionItemId} for subscription ${user.stripeSubscriptionId}`);
+
+      // 3. Prepare parameters for updating the subscription
+      const updateParams: Stripe.SubscriptionUpdateParams = {
+        items: [
+          {
+            id: currentSubscriptionItemId, // The ID of the subscription item to modify
+            price: newPriceId,             // The ID of the new price
+            // quantity: 1, // If your prices are quantity-based
+          },
+          // If you were to remove other items (like an old commission item), you'd add:
+          // { id: oldOtherItemId, deleted: true }
+        ],
+        proration_behavior: prorationBehavior,
+        // payment_behavior: 'default_incomplete', // Optional: For finer control over payment failures on prorated invoices
+        expand: ['latest_invoice','pending_setup_intent'], // To check for immediate payment on upgrade
+      };
+
+      // 4. Call Stripe to update the subscription
+      this.logger.log(`Updating Stripe subscription ${user.stripeSubscriptionId} to price ${newPriceId}...`);
+      const updatedStripeSubscription = await this.stripe.subscriptions.update(
+        user.stripeSubscriptionId,
+        updateParams,
+      );
+      this.logger.log(
+        `Successfully updated Stripe subscription ${updatedStripeSubscription.id}. New status: ${updatedStripeSubscription.status}`,
+      );
+
+      //  Handle Initial Payment Status for Prorations (Similar to createSubscription)
+      //    If an upgrade causes an immediate proration charge.
+      // const latestInvoice = updatedStripeSubscription.latest_invoice as Stripe.Invoice;
+
+
+      // Update local database (minimal update here; rely on webhooks for final state)
+      //    The `customer.subscription.updated` webhook is the most reliable source for updating
+      //    activeStripePriceId, currentPeriodEnd, and subscriptionStatus.
+      //    Here, we mainly log and acknowledge.
+      await this.userModel.findByIdAndUpdate(userId, {
+        lastStripeSync: new Date(),
+      });
+      this.logger.log(`Local user ${userId} lastStripeSync updated after plan change request.`);
+
+      return updatedStripeSubscription
+
+    } catch (error) {
+      this.logger.error(
+        `Failed to change subscription for user ${userId} to price ${newPriceId}: ${error.message}`,
+        error.stack,
+      );
+      if (error instanceof NotFoundException || error instanceof BadRequestException) {
+        throw error;
+      }
+      throw new BadRequestException(
+        `Could not change subscription: ${error.message}`,
       );
     }
   }
