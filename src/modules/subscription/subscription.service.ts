@@ -13,6 +13,8 @@ import { User, UserDoc } from '../customer/schemas/user.schema';
 import { StripeCustomerService } from '../customer/customer.service';
 import { CreateSubscriptionDto } from './dto/create-subscription.dto';
 import { ChangePlanDto } from './dto/change-subscription.dto';
+import { SubscriptionResponseDto } from './dto/subscription-response.dto';
+import { CancelSubscriptionDto } from './dto/cancel-subscription.dto';
 
 @Injectable()
 export class SubscriptionService {
@@ -174,7 +176,7 @@ export class SubscriptionService {
         stripeSubscription.status === 'past_due'
           ? 'past_due'
           : stripeSubscription.status === 'active' ||
-            stripeSubscription.status === 'trialing'
+              stripeSubscription.status === 'trialing'
             ? 'active'
             : 'none',
       activeStripePriceId: priceId,
@@ -245,13 +247,13 @@ export class SubscriptionService {
     }
   }
 
-   /**
+  /**
    * Changes an existing subscription to a new plan.
    * @param userId The ID of the user in your local database.
    * @param changePlanDto DTO containing the new Price ID and proration behavior.
    * @returns The updated Stripe Subscription object.
    */
-   async changeSubscriptionPlan(
+  async changeSubscriptionPlan(
     userId: string,
     changePlanDto: ChangePlanDto,
   ): Promise<Stripe.Subscription> {
@@ -263,7 +265,8 @@ export class SubscriptionService {
 
     try {
       // 1. Find the user and their current active Stripe Subscription ID from your DB
-      const user = await this.userModel.findById(userId)
+      const user = await this.userModel
+        .findById(userId)
         .select('stripeCustomerId stripeSubscriptionId activeStripePriceId') // Select necessary fields
         .exec();
 
@@ -273,17 +276,25 @@ export class SubscriptionService {
       }
 
       if (!user.stripeSubscriptionId) {
-        this.logger.warn(`User ${userId} does not have an active Stripe subscription to change.`);
-        throw new BadRequestException('No active subscription found to change.');
+        this.logger.warn(
+          `User ${userId} does not have an active Stripe subscription to change.`,
+        );
+        throw new BadRequestException(
+          'No active subscription found to change.',
+        );
       }
 
       if (!user.stripeCustomerId) {
-        this.logger.error(`User ${userId} has a subscription ID but no Stripe Customer ID. Data inconsistency.`);
+        this.logger.error(
+          `User ${userId} has a subscription ID but no Stripe Customer ID. Data inconsistency.`,
+        );
         throw new BadRequestException('Customer configuration error.');
       }
-      
+
       if (user.activeStripePriceId === newPriceId) {
-        this.logger.warn(`User ${userId} is already subscribed to price ${newPriceId}. No change needed.`);
+        this.logger.warn(
+          `User ${userId} is already subscribed to price ${newPriceId}. No change needed.`,
+        );
         // Retrieve and return the current subscription as no change is made
         return this.stripe.subscriptions.retrieve(user.stripeSubscriptionId);
       }
@@ -297,23 +308,37 @@ export class SubscriptionService {
           { expand: ['items'] }, // Expand items to get their IDs
         );
       } catch (error) {
-        this.logger.error(`Failed to retrieve current subscription ${user.stripeSubscriptionId} from Stripe: ${error.message}`, error.stack);
+        this.logger.error(
+          `Failed to retrieve current subscription ${user.stripeSubscriptionId} from Stripe: ${error.message}`,
+          error.stack,
+        );
         if (error.code === 'resource_missing') {
-            // Local DB might be out of sync. Clear local subscription data.
-            await this.userModel.findByIdAndUpdate(userId, {
-                stripeSubscriptionId: null,
-                activeStripePriceId: null,
-                subscriptionStatus: 'canceled', // Or some other inactive status
-                hasActiveSubscription: false,
-            });
-            throw new NotFoundException('Active subscription not found in Stripe. Please subscribe first.');
+          // Local DB might be out of sync. Clear local subscription data.
+          await this.userModel.findByIdAndUpdate(userId, {
+            stripeSubscriptionId: null,
+            activeStripePriceId: null,
+            subscriptionStatus: 'canceled', // Or some other inactive status
+            hasActiveSubscription: false,
+          });
+          throw new NotFoundException(
+            'Active subscription not found in Stripe. Please subscribe first.',
+          );
         }
-        throw new BadRequestException(`Could not retrieve current subscription details: ${error.message}`);
+        throw new BadRequestException(
+          `Could not retrieve current subscription details: ${error.message}`,
+        );
       }
 
-      if (!currentSubscription.items || currentSubscription.items.data.length === 0) {
-        this.logger.error(`Subscription ${user.stripeSubscriptionId} has no items. Cannot update.`);
-        throw new BadRequestException('Current subscription has no items to update.');
+      if (
+        !currentSubscription.items ||
+        currentSubscription.items.data.length === 0
+      ) {
+        this.logger.error(
+          `Subscription ${user.stripeSubscriptionId} has no items. Cannot update.`,
+        );
+        throw new BadRequestException(
+          'Current subscription has no items to update.',
+        );
       }
 
       /**
@@ -324,18 +349,24 @@ export class SubscriptionService {
        */
       const currentSubscriptionItemId = currentSubscription.items.data[0].id;
       if (!currentSubscriptionItemId) {
-          this.logger.error(`Could not find a subscription item ID for subscription ${user.stripeSubscriptionId}.`);
-          throw new BadRequestException('Cannot identify the current subscription item to update.');
+        this.logger.error(
+          `Could not find a subscription item ID for subscription ${user.stripeSubscriptionId}.`,
+        );
+        throw new BadRequestException(
+          'Cannot identify the current subscription item to update.',
+        );
       }
 
-      this.logger.log(`Found current subscription item ID: ${currentSubscriptionItemId} for subscription ${user.stripeSubscriptionId}`);
+      this.logger.log(
+        `Found current subscription item ID: ${currentSubscriptionItemId} for subscription ${user.stripeSubscriptionId}`,
+      );
 
       // 3. Prepare parameters for updating the subscription
       const updateParams: Stripe.SubscriptionUpdateParams = {
         items: [
           {
             id: currentSubscriptionItemId, // The ID of the subscription item to modify
-            price: newPriceId,             // The ID of the new price
+            price: newPriceId, // The ID of the new price
             // quantity: 1, // If your prices are quantity-based
           },
           // If you were to remove other items (like an old commission item), you'd add:
@@ -343,11 +374,13 @@ export class SubscriptionService {
         ],
         proration_behavior: prorationBehavior,
         // payment_behavior: 'default_incomplete', // Optional: For finer control over payment failures on prorated invoices
-        expand: ['latest_invoice','pending_setup_intent'], // To check for immediate payment on upgrade
+        expand: ['latest_invoice', 'pending_setup_intent'], // To check for immediate payment on upgrade
       };
 
       // 4. Call Stripe to update the subscription
-      this.logger.log(`Updating Stripe subscription ${user.stripeSubscriptionId} to price ${newPriceId}...`);
+      this.logger.log(
+        `Updating Stripe subscription ${user.stripeSubscriptionId} to price ${newPriceId}...`,
+      );
       const updatedStripeSubscription = await this.stripe.subscriptions.update(
         user.stripeSubscriptionId,
         updateParams,
@@ -360,7 +393,6 @@ export class SubscriptionService {
       //    If an upgrade causes an immediate proration charge.
       // const latestInvoice = updatedStripeSubscription.latest_invoice as Stripe.Invoice;
 
-
       // Update local database (minimal update here; rely on webhooks for final state)
       //    The `customer.subscription.updated` webhook is the most reliable source for updating
       //    activeStripePriceId, currentPeriodEnd, and subscriptionStatus.
@@ -368,21 +400,401 @@ export class SubscriptionService {
       await this.userModel.findByIdAndUpdate(userId, {
         lastStripeSync: new Date(),
       });
-      this.logger.log(`Local user ${userId} lastStripeSync updated after plan change request.`);
+      this.logger.log(
+        `Local user ${userId} lastStripeSync updated after plan change request.`,
+      );
 
-      return updatedStripeSubscription
-
+      return updatedStripeSubscription;
     } catch (error) {
       this.logger.error(
         `Failed to change subscription for user ${userId} to price ${newPriceId}: ${error.message}`,
         error.stack,
       );
-      if (error instanceof NotFoundException || error instanceof BadRequestException) {
+      if (
+        error instanceof NotFoundException ||
+        error instanceof BadRequestException
+      ) {
         throw error;
       }
       throw new BadRequestException(
         `Could not change subscription: ${error.message}`,
       );
     }
+  }
+
+  /**
+   * Retrieves the current user's subscription details from the database
+   * and optionally syncs with Stripe for the most up-to-date information.
+   * @param userId The ID of the user in your local database.
+   * @param syncWithStripe Whether to fetch fresh data from Stripe (optional, defaults to false)
+   * @returns The user's subscription details
+   */
+  async getUserSubscription(
+    userId: string,
+    syncWithStripe: boolean = false,
+  ): Promise<SubscriptionResponseDto> {
+    this.logger.log(
+      `Fetching subscription details for user ${userId}${syncWithStripe ? ' with Stripe sync' : ''}`,
+    );
+
+    try {
+      const user = await this.findAndValidateUser(userId);
+
+      // If sync is requested and user has a Stripe subscription, fetch latest from Stripe
+      if (syncWithStripe && user.stripeSubscriptionId) {
+        await this.syncSubscriptionWithStripe(user);
+        // Refetch user data after sync
+        const updatedUser = await this.findAndValidateUser(userId);
+        return this.mapUserToSubscriptionResponse(updatedUser);
+      }
+
+      return this.mapUserToSubscriptionResponse(user);
+    } catch (error) {
+      this.logger.error(
+        `Failed to fetch subscription for user ${userId}: ${error.message}`,
+        error.stack,
+      );
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      throw new BadRequestException(
+        `Could not fetch subscription details: ${error.message}`,
+      );
+    }
+  }
+
+  /**
+   * Syncs the user's subscription data with Stripe to ensure accuracy
+   * @param user The user document
+   * @private
+   */
+  private async syncSubscriptionWithStripe(user: UserDoc): Promise<void> {
+    if (!user.stripeSubscriptionId) {
+      this.logger.warn(
+        `User ${user._id} has no Stripe subscription ID to sync with`,
+      );
+      return;
+    }
+
+    try {
+      this.logger.log(
+        `Syncing subscription ${user.stripeSubscriptionId} with Stripe for user ${user._id}`,
+      );
+
+      const stripeSubscription = await this.stripe.subscriptions.retrieve(
+        user.stripeSubscriptionId,
+      );
+
+      const updateData = {
+        subscriptionStatus: stripeSubscription.status,
+        activeStripePriceId:
+          stripeSubscription.items &&
+          stripeSubscription.items.data &&
+          stripeSubscription.items.data.length > 0 &&
+          stripeSubscription.items.data[0].price
+            ? stripeSubscription.items.data[0].price.id
+            : user.activeStripePriceId,
+        currentPeriodEnd: new Date(
+          stripeSubscription?.items?.data[0]?.current_period_end * 1000,
+        ),
+        hasActiveSubscription: ['active', 'trialing'].includes(
+          stripeSubscription.status,
+        ),
+        paymentStatus:
+          stripeSubscription.status === 'past_due'
+            ? 'past_due'
+            : stripeSubscription.status === 'unpaid'
+              ? 'past_due'
+              : ['active', 'trialing'].includes(stripeSubscription.status)
+                ? 'active'
+                : stripeSubscription.status === 'canceled'
+                  ? 'canceled'
+                  : 'none',
+        lastStripeSync: new Date(),
+      };
+
+      await this.userModel.findByIdAndUpdate(user._id, updateData);
+      this.logger.log(
+        `Successfully synced subscription data for user ${user._id}`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Failed to sync subscription with Stripe for user ${user._id}: ${error.message}`,
+        error.stack,
+      );
+
+      if (error.code === 'resource_missing') {
+        // Subscription no longer exists in Stripe, update local data
+        await this.userModel.findByIdAndUpdate(user._id, {
+          stripeSubscriptionId: null,
+          subscriptionStatus: 'canceled',
+          activeStripePriceId: null,
+          hasActiveSubscription: false,
+          paymentStatus: 'canceled',
+          lastStripeSync: new Date(),
+        });
+        this.logger.log(
+          `Cleared subscription data for user ${user._id} as it no longer exists in Stripe`,
+        );
+      } else {
+        // Don't throw error for sync failures, just log and continue with cached data
+        this.logger.warn(
+          `Sync failed for user ${user._id}, returning cached subscription data`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Maps user document to subscription response DTO
+   * @param user The user document
+   * @returns Formatted subscription response
+   * @private
+   */
+  private mapUserToSubscriptionResponse(
+    user: UserDoc,
+  ): SubscriptionResponseDto {
+    return {
+      stripeSubscriptionId: user.stripeSubscriptionId || null,
+      subscriptionStatus: user.subscriptionStatus || null,
+      activeStripePriceId: user.activeStripePriceId || null,
+      currentPeriodEnd: user.currentPeriodEnd || null,
+      hasActiveSubscription: user.hasActiveSubscription || false,
+      paymentStatus: user.paymentStatus || 'none',
+      defaultPaymentMethod: user.defaultPaymentMethod || null,
+      lastStripeSync: user.lastStripeSync || null,
+    };
+  }
+
+  /**
+   * Cancels a user's active subscription.
+   * @param userId The ID of the user in your local database.
+   * @param cancelSubscriptionDto DTO containing cancellation preferences.
+   * @returns The cancelled Stripe Subscription object.
+   */
+  async cancelSubscription(
+    userId: string,
+    cancelSubscriptionDto: CancelSubscriptionDto,
+  ): Promise<Stripe.Subscription> {
+    const { cancelImmediately, cancellationReason } = cancelSubscriptionDto;
+
+    this.logger.log(
+      `Attempting to cancel subscription for user ${userId}. Immediate: ${cancelImmediately}, Reason: ${cancellationReason || 'Not provided'}`,
+    );
+
+    try {
+      // 1. Find the user and validate they have an active subscription
+      const user = await this.userModel
+        .findById(userId)
+        .select(
+          'stripeCustomerId stripeSubscriptionId subscriptionStatus hasActiveSubscription',
+        )
+        .exec();
+
+      if (!user) {
+        this.logger.error(
+          `User not found with ID: ${userId} for subscription cancellation.`,
+        );
+        throw new NotFoundException(`User not found with ID: ${userId}.`);
+      }
+
+      if (!user.stripeSubscriptionId) {
+        this.logger.warn(
+          `User ${userId} does not have an active Stripe subscription to cancel.`,
+        );
+        throw new BadRequestException(
+          'No active subscription found to cancel.',
+        );
+      }
+
+      if (!user.stripeCustomerId) {
+        this.logger.error(
+          `User ${userId} has a subscription ID but no Stripe Customer ID. Data inconsistency.`,
+        );
+        throw new BadRequestException('Customer configuration error.');
+      }
+
+      // 2. Verify the subscription exists in Stripe and get current status
+      let currentSubscription: Stripe.Subscription;
+      try {
+        currentSubscription = await this.stripe.subscriptions.retrieve(
+          user.stripeSubscriptionId,
+        );
+      } catch (error) {
+        this.logger.error(
+          `Failed to retrieve subscription ${user.stripeSubscriptionId} from Stripe: ${error.message}`,
+          error.stack,
+        );
+
+        if (error.code === 'resource_missing') {
+          // Subscription doesn't exist in Stripe, clean up local data
+          await this.clearLocalSubscriptionData(userId);
+          throw new NotFoundException(
+            'Subscription not found in Stripe. Local data has been cleaned up.',
+          );
+        }
+        throw new BadRequestException(
+          `Could not retrieve subscription details: ${error.message}`,
+        );
+      }
+
+      // 3. Check if subscription is already cancelled
+      if (currentSubscription.status === 'canceled') {
+        this.logger.warn(
+          `Subscription ${user.stripeSubscriptionId} is already cancelled.`,
+        );
+        throw new BadRequestException('Subscription is already cancelled.');
+      }
+
+      // 4. Prepare cancellation parameters
+      const cancelParams:
+        | Stripe.SubscriptionUpdateParams
+        | Stripe.SubscriptionCancelParams = cancelImmediately
+        ? {
+            // For immediate cancellation, we cancel the subscription
+          }
+        : {
+            // For end-of-period cancellation, we update the subscription
+            cancel_at_period_end: true,
+          };
+
+      // Add metadata for tracking
+      const metadata: Record<string, string> = {
+        cancelled_by: 'user',
+        cancelled_at: new Date().toISOString(),
+        local_user_id: userId,
+      };
+
+      if (cancellationReason) {
+        // also add the cancellation reason to the metadata
+        metadata.cancellation_reason = cancellationReason;
+      }
+
+      // 5. Execute the cancellation in Stripe
+      let cancelledSubscription: Stripe.Subscription;
+
+      if (cancelImmediately) {
+        this.logger.log(
+          `Cancelling subscription ${user.stripeSubscriptionId} immediately...`,
+        );
+        cancelledSubscription = await this.stripe.subscriptions.cancel(
+          user.stripeSubscriptionId,
+          {
+            ...cancelParams,
+            // metadata,
+            ...(cancellationReason && {
+              cancellation_details: {
+                comment: cancellationReason,
+              },
+            }),
+          } as Stripe.SubscriptionCancelParams,
+        );
+      } else {
+        this.logger.log(
+          `Setting subscription ${user.stripeSubscriptionId} to cancel at period end...`,
+        );
+        cancelledSubscription = await this.stripe.subscriptions.update(
+          user.stripeSubscriptionId,
+          {
+            ...cancelParams,
+            ...(cancellationReason && {
+              cancellation_details: {
+                comment: cancellationReason,
+              },
+            }),
+            metadata: {
+              ...metadata,
+            },
+          } as Stripe.SubscriptionUpdateParams,
+        );
+      }
+
+      this.logger.log(
+        `Successfully processed cancellation for subscription ${cancelledSubscription.id}. Status: ${cancelledSubscription.status}, Cancel at period end: ${cancelledSubscription.cancel_at_period_end}`,
+      );
+
+      // 6. Update local database
+      await this.updateLocalUserAfterCancellation(
+        userId,
+        cancelledSubscription,
+        cancelImmediately,
+      );
+
+      return cancelledSubscription;
+    } catch (error) {
+      this.logger.error(
+        `Failed to cancel subscription for user ${userId}: ${error.message}`,
+        error.stack,
+      );
+      if (
+        error instanceof NotFoundException ||
+        error instanceof BadRequestException
+      ) {
+        throw error;
+      }
+      throw new BadRequestException(
+        `Could not cancel subscription: ${error.message}`,
+      );
+    }
+  }
+
+  /**
+   * Updates the local user data after subscription cancellation
+   * @param userId The user ID
+   * @param cancelledSubscription The cancelled Stripe subscription
+   * @param wasImmediateCancellation Whether it was an immediate cancellation
+   * @private
+   */
+  private async updateLocalUserAfterCancellation(
+    userId: string,
+    cancelledSubscription: Stripe.Subscription,
+    wasImmediateCancellation: boolean,
+  ): Promise<void> {
+    const updateData: Partial<UserDoc> = {
+      subscriptionStatus: cancelledSubscription.status,
+      lastStripeSync: new Date(),
+    };
+
+    if (
+      wasImmediateCancellation ||
+      cancelledSubscription.status === 'canceled'
+    ) {
+      // Immediate cancellation or already cancelled
+      updateData.hasActiveSubscription = false;
+      updateData.paymentStatus = 'canceled';
+      updateData.stripeSubscriptionId = null;
+      updateData.activeStripePriceId = null;
+      updateData.currentPeriodEnd = null;
+    } else if (cancelledSubscription.cancel_at_period_end) {
+      // Scheduled for cancellation at period end - subscription remains active until then
+      updateData.hasActiveSubscription = true; // Still active until period end
+      updateData.paymentStatus = 'active'; // Still active until period end
+      // Keep other subscription data intact since it's still active
+    }
+
+    await this.userModel.findByIdAndUpdate(userId, updateData);
+    this.logger.log(
+      `Updated local user ${userId} data after cancellation processing.`,
+    );
+  }
+
+  /**
+   * Clears local subscription data when subscription is not found in Stripe
+   * @param userId The user ID
+   * @private
+   */
+  private async clearLocalSubscriptionData(userId: string): Promise<void> {
+    await this.userModel.findByIdAndUpdate(userId, {
+      stripeSubscriptionId: null,
+      subscriptionStatus: 'canceled',
+      activeStripePriceId: null,
+      currentPeriodEnd: null,
+      hasActiveSubscription: false,
+      paymentStatus: 'canceled',
+      lastStripeSync: new Date(),
+    });
+    this.logger.log(
+      `Cleared subscription data for user ${userId} as it no longer exists in Stripe.`,
+    );
   }
 }
