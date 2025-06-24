@@ -339,18 +339,16 @@ export class WebhookService {
   /**
    * Handles the 'customer.subscription.updated' Stripe webhook event
    * Updates the user's subscription details in the database based on the Stripe subscription information
+   * This now includes handling for cancellation-related updates
    *
    * @param subscription - The Stripe subscription object from the webhook event
-   * @privateRemarks
-   * - Validates the customer ID
-   * - Finds the corresponding user by Stripe customer ID
-   * - Updates user document with latest subscription status, price, and payment details
+   * @private
    */
   private async handleCustomerSubscriptionUpdated(
     subscription: Stripe.Subscription,
   ) {
     this.logger.log(
-      `Handling 'customer.subscription.updated': Subscription ID ${subscription.id}, Status ${subscription.status}, Customer ID ${subscription.customer}`,
+      `Handling 'customer.subscription.updated': Subscription ID ${subscription.id}, Status ${subscription.status}, Customer ID ${subscription.customer}, Cancel at period end: ${subscription.cancel_at_period_end}`,
     );
 
     if (!subscription.customer || typeof subscription.customer !== 'string') {
@@ -384,25 +382,51 @@ export class WebhookService {
         subscription.items.data[0].price
           ? subscription.items.data[0].price.id
           : null,
-      // currentPeriodStart: new Date(subscription.current_period_start * 1000),
       currentPeriodEnd: new Date(
-        subscription?.items?.data[0].current_period_end * 1000,
+        subscription?.items?.data[0]?.current_period_end * 1000,
       ),
-      hasActiveSubscription: ['active', 'trialing'].includes(
+      lastStripeSync: new Date(),
+    };
+
+    // Handle subscription status and active state based on cancellation status
+    if (subscription.status === 'canceled') {
+      // Subscription is fully canceled
+      updateData.hasActiveSubscription = false;
+      updateData.paymentStatus = 'canceled';
+      updateData.stripeSubscriptionId = null;
+      updateData.activeStripePriceId = null;
+      updateData.currentPeriodEnd = null;
+    } else if (subscription.cancel_at_period_end) {
+      // Subscription is scheduled for cancellation but still active
+      updateData.hasActiveSubscription = ['active', 'trialing'].includes(
         subscription.status,
-      ),
-      paymentStatus:
+      );
+      updateData.paymentStatus =
         subscription.status === 'past_due'
           ? 'past_due'
           : subscription.status === 'unpaid'
             ? 'past_due'
             : ['active', 'trialing'].includes(subscription.status)
               ? 'active'
-              : subscription.status === 'canceled'
-                ? 'canceled'
-                : 'none',
-      lastStripeSync: new Date(),
-    };
+              : 'none';
+
+      this.logger.log(
+        `Subscription ${subscription.id} is scheduled for cancellation at period end (${new Date(subscription?.items?.data[0]?.current_period_end * 1000).toISOString()}) but remains active until then.`,
+      );
+    } else {
+      // Normal subscription logic (not scheduled for cancellation and not canceled)
+      updateData.hasActiveSubscription = ['active', 'trialing'].includes(
+        subscription.status,
+      );
+      updateData.paymentStatus =
+        subscription.status === 'past_due'
+          ? 'past_due'
+          : subscription.status === 'unpaid'
+            ? 'past_due'
+            : ['active', 'trialing'].includes(subscription.status)
+              ? 'active'
+              : 'none';
+    }
 
     await this.userModel.updateOne(
       { stripeCustomerId: stripeCustomerId },
