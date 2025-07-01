@@ -21,7 +21,9 @@ export class StripeCustomerService {
     @Inject('STRIPE_CLIENT') private stripe: Stripe,
   ) {}
 
-  async createStripeCustomer(customer: UserDoc): Promise<any> {
+  async createStripeCustomer(
+    customer: Partial<UserDoc & CreateCustomerDto>,
+  ): Promise<any> {
     try {
       // 1) Find the user in our database
       const user = await this.userModel.findById(customer._id);
@@ -39,7 +41,8 @@ export class StripeCustomerService {
       // 3) create in Stripe
       const stripeCustomer = await this.stripe.customers.create({
         email: customer.email,
-        name: customer.name,
+        name: customer.cardHolderName ?? customer.name,
+        ...(customer.metadata ? { metadata: customer.metadata } : {}),
       });
 
       // 4) Update user with Stripe customer ID
