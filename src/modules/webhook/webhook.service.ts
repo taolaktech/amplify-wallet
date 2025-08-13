@@ -5,11 +5,16 @@ import {
   Injectable,
   Logger,
 } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { InjectConnection, InjectModel } from '@nestjs/mongoose';
+import mongoose, { Model, startSession } from 'mongoose';
 import Stripe from 'stripe';
-import { User, UserDoc } from '../customer/schemas/user.schema';
+import {
+  TransactionDocument,
+  UserDoc,
+  WalletDocument,
+} from '../../database/schema';
 import { ConfigService } from '@nestjs/config';
+import { TRANSACTION_STATUS } from 'src/common/types/transaction.types';
 
 @Injectable()
 export class WebhookService {
@@ -18,7 +23,11 @@ export class WebhookService {
 
   constructor(
     private readonly configService: ConfigService,
-    @InjectModel(User.name) private userModel: Model<UserDoc>,
+    @InjectModel('users') private userModel: Model<UserDoc>,
+    @InjectModel('transactions')
+    private transactionModel: Model<TransactionDocument>,
+    @InjectConnection() private readonly connection: mongoose.Connection,
+    @InjectModel('wallets') private walletModel: Model<WalletDocument>,
     @Inject('STRIPE_CLIENT') private stripe: Stripe,
   ) {
     this.stripeWebhookSecret = this.configService.get<string>(
@@ -106,6 +115,16 @@ export class WebhookService {
         case 'customer.updated':
           await this.handleCustomerUpdated(
             stripeEventObject as Stripe.Customer,
+          );
+          break;
+        case 'payment_intent.succeeded':
+          await this.handleSuccesfullCharge(
+            stripeEventObject as Stripe.PaymentIntent,
+          );
+          break;
+        case 'payment_intent.payment_failed':
+          await this.handleFailedCharge(
+            stripeEventObject as Stripe.PaymentIntent,
           );
           break;
         // === Other useful events you might add later ===
@@ -627,5 +646,98 @@ export class WebhookService {
         `No relevant changes detected for user ${user._id} in customer.updated event. Skipping DB update.`,
       );
     }
+  }
+
+  /**
+   * Handles the 'payment_intent.succeeded' event by updating the transaction status to COMPLETED
+   *
+   * @param paymentIntent - The Stripe PaymentIntent object representing the successful charge.
+   * @private
+   */
+  private async handleSuccesfullCharge(paymentIntent: Stripe.PaymentIntent) {
+    this.logger.log(
+      `Handling 'payment_intent.succeeded' : PaymentIntent ID ${paymentIntent.id}, Customer ID ${paymentIntent.customer}`,
+    );
+
+    const session = await this.connection.startSession();
+    try {
+      session.startTransaction();
+
+      // find pending transaction
+      const existingTransaction = await this.transactionModel.findOneAndUpdate(
+        {
+          'metadata.paymentIntentId': paymentIntent.id,
+          status: TRANSACTION_STATUS.PENDING,
+        },
+        {
+          $set: {
+            status: TRANSACTION_STATUS.COMPLETED,
+          },
+        },
+        { session },
+      );
+
+      if (!existingTransaction) {
+        this.logger.log(
+          `Transaction already processed or not found for this successful payment intent: ${paymentIntent.id}`,
+        );
+        // abort transaction
+        await session.abortTransaction();
+        return;
+      }
+
+      // increment the users wallet balance
+      await this.walletModel.findOneAndUpdate(
+        { userId: existingTransaction.userId },
+        {
+          $inc: { balance: paymentIntent.amount },
+        },
+        { session },
+      );
+
+      // commit transaction
+      await session.commitTransaction();
+    } catch (error) {
+      throw error;
+    } finally {
+      await session.endSession();
+    }
+  }
+
+  /**
+   * Handles the 'payment_intent.payment_failed' event by updating the transaction status to FAILED
+   *
+   * @param paymentIntent - The Stripe PaymentIntent object representing the successful charge.
+   * @private
+   */
+  private async handleFailedCharge(paymentIntent: Stripe.PaymentIntent) {
+    this.logger.log(
+      `Handling 'payment_intent.payment_failed': PaymentIntent ID ${paymentIntent.id}, Customer ID ${paymentIntent.customer}`,
+    );
+
+    const existingTransaction = await this.transactionModel.findOneAndUpdate(
+      {
+        'metadata.paymentIntentId': paymentIntent.id,
+        status: TRANSACTION_STATUS.PENDING,
+      },
+      {
+        $set: {
+          status: TRANSACTION_STATUS.FAILED,
+          // use dot notation to prevent overwriting existing metadata
+          'metadata.errorMessage': paymentIntent.last_payment_error?.message,
+        },
+      },
+    );
+
+    if (!existingTransaction) {
+      this.logger.log(
+        `No pending transaction found for this failed payment intent: ${paymentIntent.id}`,
+      );
+      return;
+    }
+
+    this.logger.log(`Transaction ${existingTransaction._id} updated to FAILED`);
+
+    return;
   }
 }

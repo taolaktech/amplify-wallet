@@ -9,7 +9,7 @@ export interface DatabaseConfig {
 export default registerAs(
   'database',
   (): DatabaseConfig => ({
-    uri: process.env.MONGODB_URI ?? 'mongodb://localhost:27017/amplify-wallet',
+    uri: process.env.MONGODB_URI ?? 'mongodb://localhost:27017/amplify',
     options: {
       dbName: process.env.MONGODB_DB_NAME ?? 'amplify-wallet',
       serverSelectionTimeoutMS: 5000, // Keep trying to send operations for 5 seconds

@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
-import { User, UserDoc } from './schemas/user.schema';
+import { UserDoc } from '../../database/schema';
 import Stripe from 'stripe';
 import { CreateCustomerDto } from './dto/create-customer.dto';
 import { UpdateCustomerDto } from './dto/update-customer.dto';
@@ -17,7 +17,7 @@ import { UpdateCustomerDto } from './dto/update-customer.dto';
 export class StripeCustomerService {
   private readonly logger = new Logger(StripeCustomerService.name);
   constructor(
-    @InjectModel(User.name) private userModel: Model<UserDoc>,
+    @InjectModel('users') private userModel: Model<UserDoc>,
     @Inject('STRIPE_CLIENT') private stripe: Stripe,
   ) {}
 
