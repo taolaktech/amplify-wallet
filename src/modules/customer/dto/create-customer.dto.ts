@@ -1,5 +1,5 @@
 import { ApiProperty, PartialType } from '@nestjs/swagger';
-import { IsString, IsOptional, IsObject } from 'class-validator';
+import { IsString, IsEmail, IsOptional, IsObject } from 'class-validator';
 // import { UserDocument } from '../../../common/interfaces/request.interface';
 import { User } from '../schemas/user.schema';
 
@@ -18,13 +18,4 @@ export class CreateCustomerDto extends PartialType(User) {
   @IsOptional()
   @IsObject()
   metadata?: Record<string, string>;
-
-  @ApiProperty({
-    description: 'The name of the card holder',
-    example: 'John Doe',
-    required: false,
-  })
-  @IsOptional()
-  @IsString()
-  cardHolderName?: string;
 }

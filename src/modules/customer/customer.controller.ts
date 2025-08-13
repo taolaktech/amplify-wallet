@@ -26,6 +26,7 @@ import {
 } from '@nestjs/swagger';
 import { UpdateCustomerDto } from './dto/update-customer.dto';
 import Stripe from 'stripe';
+import { UserDoc } from './schemas/user.schema';
 import { SetDefaultPaymentMethodDto } from './dto/set-default-payment.dto';
 
 @ApiTags('stripe-customers')
@@ -42,11 +43,7 @@ export class StripeCustomerController {
     @Body() customerDetails: CreateCustomerDto,
     @Req() request: ExtendedRequest,
   ): Promise<ApiResult<Stripe.Customer>> {
-    const user = Object.assign(
-      {},
-      customerDetails,
-      request['authenticatedData'],
-    );
+    const user = request['authenticatedData'];
 
     const customer = await this.customerService.createStripeCustomer(user);
 
