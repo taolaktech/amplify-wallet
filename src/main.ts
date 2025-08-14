@@ -21,17 +21,17 @@ async function bootstrap() {
 
   app.enableCors();
   // add helmet middleware
-  app.use(helmet());
+  // app.use(helmet());
   // Apply helmet to all routes except /docs
-  // app.use((req, res, next) => {
-  //   if (req.path.startsWith('/docs')) {
-  //     // Skip helmet for docs route
-  //     return next();
-  //   }
+  app.use((req, res, next) => {
+    if (req.path.startsWith('/docs')) {
+      // Skip helmet for docs route
+      return next();
+    }
 
-  //   // Apply helmet for all other routes
-  //   helmet()(req, res, next);
-  // });
+    // Apply helmet for all other routes
+    helmet()(req, res, next);
+  });
 
   // Swagger Setup
   const swaggerConfig = new DocumentBuilder()

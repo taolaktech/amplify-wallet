@@ -15,7 +15,11 @@ import { ChangePlanDto } from './dto/change-subscription.dto';
 import { SubscriptionResponseDto } from './dto/subscription-response.dto';
 import { CancelSubscriptionDto } from './dto/cancel-subscription.dto';
 import { User, UserDoc } from '../../database/schema';
-import { getPlanName } from 'src/common/constants/price.constant';
+import {
+  CAMPAIGN_LIMIT,
+  getPlanName,
+  PlanName,
+} from 'src/common/constants/price.constant';
 
 @Injectable()
 export class SubscriptionService {
@@ -798,5 +802,23 @@ export class SubscriptionService {
     this.logger.log(
       `Cleared subscription data for user ${userId} as it no longer exists in Stripe.`,
     );
+  }
+
+  async fetchSubDetails(userId: string) {
+    const user = await this.userModel.findById(userId);
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const plan = user.planTier as PlanName;
+
+    // fetch subscription limits
+    const limit = CAMPAIGN_LIMIT[plan];
+
+    return {
+      planTier: plan,
+      campaignLimit: limit,
+    };
   }
 }

@@ -5,10 +5,11 @@ import {
   Injectable,
   InternalServerErrorException,
   Logger,
+  NotFoundException,
 } from '@nestjs/common';
 import { InjectModel, InjectConnection } from '@nestjs/mongoose';
 import * as mongoose from 'mongoose';
-import { Model, startSession } from 'mongoose';
+import { Model, ObjectId, startSession, Types } from 'mongoose';
 import {
   TransactionDocument,
   User,
@@ -21,6 +22,7 @@ import {
   TRANSACTION_STATUS,
   TRANSACTION_TYPE,
 } from 'src/common/types/transaction.types';
+import { DebitCampaignDto } from './dto/debit-campaign.dto';
 
 @Injectable()
 export class WalletService {
@@ -204,5 +206,203 @@ export class WalletService {
 
       throw new InternalServerErrorException(message);
     }
+  }
+
+  /**
+   * Debit a user's wallet for a campaign
+   * @param debitData
+   * @returns Transaction details and remaining balance
+   */
+  async debitWalletForCampaign(
+    debitData: DebitCampaignDto & { idempotencyKey: string },
+  ): Promise<{
+    transactionId: string;
+    remainingBalance: number;
+  }> {
+    const session = await this.connection.startSession();
+
+    try {
+      // Business validation
+      if (debitData.amountInCents < 100) {
+        throw new BadRequestException({
+          message: 'Minimum debit amount is $1.00',
+          code: 'INVALID_AMOUNT',
+        });
+      }
+
+      // Check for duplicate transaction
+      const existingTransaction = await this.transactionModel.findOne({
+        userId: debitData.userId,
+        idempotencyKey: debitData.idempotencyKey, // we are using the pregenearated campaignId from amplify-manager as idempotency key
+      });
+
+      if (existingTransaction) {
+        this.logger.warn(
+          `::: Duplicate transaction attempt for idempotency key ${debitData.idempotencyKey} :::`,
+        );
+        throw new BadRequestException({
+          message: 'Duplicate transaction',
+          code: 'DUPLICATE_TRANSACTION',
+        });
+      }
+
+      // Validate ObjectId format before querying
+      if (!Types.ObjectId.isValid(debitData.userId)) {
+        throw new BadRequestException({
+          message: 'Invalid user ID format',
+          code: 'INVALID_USER_ID',
+        });
+      }
+
+      // Get current wallet state for metadata
+      let userWallet = await this.walletModel.findOne({
+        userId: new Types.ObjectId(debitData.userId),
+      });
+
+      if (!userWallet) {
+        // create a new wallet for the
+        // throw new BadRequestException({
+        //   message: 'Wallet not found',
+        //   code: 'WALLET_NOT_FOUND',
+        // });
+        this.logger.error('Wallet not found');
+
+        userWallet = await this.createWalletForUser(debitData.userId);
+      }
+
+      if (userWallet.status !== 'ACTIVE') {
+        throw new BadRequestException({
+          message: 'Wallet is not active',
+          code: 'WALLET_INACTIVE',
+        });
+      }
+
+      session.startTransaction();
+
+      // Atomic wallet debit with balance check to prevent race conditions
+      const walletUpdateResult = await this.walletModel.updateOne(
+        {
+          _id: userWallet._id,
+          balance: { $gte: debitData.amountInCents }, //  balance check
+          status: 'ACTIVE',
+        },
+        {
+          $inc: { balance: -debitData.amountInCents },
+        },
+        { session },
+      );
+
+      if (walletUpdateResult.matchedCount === 0) {
+        throw new BadRequestException({
+          message: 'Insufficient wallet balance or wallet inactive',
+          code: 'INSUFFICIENT_FUNDS',
+        });
+      }
+
+      // Create completed transaction with metadata
+      const [createdTransaction] = await this.transactionModel.create(
+        [
+          {
+            userId: debitData.userId,
+            type: TRANSACTION_TYPE.CAMPAIGN_DEBIT,
+            amount: debitData.amountInCents,
+            status: TRANSACTION_STATUS.COMPLETED,
+            idempotencyKey: debitData.idempotencyKey,
+            metadata: {
+              campaignId: debitData.idempotencyKey,
+              originalBalance: userWallet.balance,
+              newBalance: userWallet.balance - debitData.amountInCents,
+              timestamp: new Date(),
+              operation: 'CAMPAIGN_DEBIT',
+            },
+          },
+        ],
+        { session },
+      );
+
+      await session.commitTransaction();
+
+      this.logger.log(
+        `::: Successfully debited ${debitData.amountInCents} cents for user ${debitData.userId} :::`,
+      );
+
+      return {
+        transactionId: createdTransaction._id.toString(),
+        remainingBalance: userWallet.balance - debitData.amountInCents,
+      };
+    } catch (error) {
+      this.logger.error(
+        `::: Error debiting wallet for campaign => ${error.message} :::`,
+        error.stack,
+      );
+      // check if the session variable is undefined, so we dont
+      // call a function on an undefined variable
+      if (session && session.inTransaction()) {
+        await session.abortTransaction();
+      }
+
+      this.logger.error(
+        `::: Error debiting wallet for campaign => ${error.message} :::`,
+        error.stack,
+      );
+
+      // Re-throw BadRequestExceptions as-is for business logic errors
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+
+      if (error.name === 'MongoError' || error.name === 'MongoServerError') {
+        throw new InternalServerErrorException('Database operation failed');
+      }
+
+      throw new InternalServerErrorException(
+        'Failed to debit wallet for campaign',
+      );
+    } finally {
+      if (session) {
+        await session.endSession();
+      }
+    }
+  }
+
+  /**
+   * create a new wallet for the user and link back to the user
+   * on the user model
+   * @param userId
+   */
+  async createWalletForUser(userId: string) {
+    const user = await this.userModel.findById(userId);
+
+    if (!user) {
+      throw new NotFoundException({
+        message: 'User not found',
+        code: 'USER_NOT_FOUND',
+      });
+    }
+
+    // create wallet
+    const createdWallet = await this.walletModel.create({
+      userId: user._id,
+      status: 'ACTIVE',
+    });
+
+    // update user with wallet Id
+    await this.userModel.findByIdAndUpdate(user._id, {
+      walletId: createdWallet._id,
+    });
+
+    return createdWallet;
+  }
+
+  async fetchWalletBalance(userId: Types.ObjectId) {
+    let wallet = await this.walletModel.findOne({
+      userId: new Types.ObjectId(userId),
+    });
+
+    if (!wallet) {
+      wallet = await this.createWalletForUser(userId.toString());
+    }
+
+    return wallet;
   }
 }

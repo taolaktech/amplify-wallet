@@ -17,17 +17,26 @@ export const PRODUCT_PLANS = {
     quarterly: 'price_1RJP4F4K0EUJXpsupXziADUr',
     annual: 'price_1RJP5L4K0EUJXpsuP0J14AlF',
   },
-};
+} as const;
 
-type PlanName = keyof typeof PRODUCT_PLANS;
+export type PlanName = keyof typeof PRODUCT_PLANS;
 
 /*
  * function that takes in price id and returns the plan tier/name
  */
 export function getPlanName(priceId: string): PlanName | 'Unknown' {
   const plan = Object.keys(PRODUCT_PLANS).find((plan) => {
-    return Object.values(PRODUCT_PLANS[plan as PlanName]).includes(priceId);
+    return Object.values(PRODUCT_PLANS[plan as PlanName]).includes(
+      priceId as any,
+    );
   });
 
   return (plan as PlanName) || 'Unknown';
 }
+
+export const CAMPAIGN_LIMIT: Record<PlanName, number> = {
+  free: 1,
+  starter: 15,
+  grow: 30,
+  scale: 150,
+};

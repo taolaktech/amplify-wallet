@@ -19,6 +19,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     let status = HttpStatus.INTERNAL_SERVER_ERROR;
     let message = 'Something went wrong';
     let errors = null;
+    let code = null;
 
     // Handle HttpExceptions (including BadRequestException which is used for validation errors)
     if (exception instanceof HttpException) {
@@ -39,6 +40,10 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         message = (exceptionResponse as any).message || exception.message;
         // Preserve any other fields in the exception response
         errors = (exceptionResponse as any).errors;
+
+        if ('code' in exceptionResponse) {
+          code = exceptionResponse.code;
+        }
       } else {
         // Handle HttpExceptions with string responses
         message = exceptionResponse as string;
@@ -54,6 +59,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       statusCode: status,
       message: message,
       timestamp: new Date().toISOString(),
+      ...(code ? { code } : {}),
     };
 
     // Include detailed validation errors if available
