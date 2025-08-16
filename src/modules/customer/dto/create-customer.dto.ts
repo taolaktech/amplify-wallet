@@ -1,7 +1,7 @@
 import { ApiProperty, PartialType } from '@nestjs/swagger';
 import { IsString, IsOptional, IsObject } from 'class-validator';
 // import { UserDocument } from '../../../common/interfaces/request.interface';
-import { User } from '../schemas/user.schema';
+import { User } from '../../../database/schema';
 
 export class CreateCustomerDto extends PartialType(User) {
   @ApiProperty({

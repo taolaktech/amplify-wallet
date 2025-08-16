@@ -9,19 +9,24 @@ import {
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import Stripe from 'stripe';
-import { User, UserDoc } from '../customer/schemas/user.schema';
 import { StripeCustomerService } from '../customer/customer.service';
 import { CreateSubscriptionDto } from './dto/create-subscription.dto';
 import { ChangePlanDto } from './dto/change-subscription.dto';
 import { SubscriptionResponseDto } from './dto/subscription-response.dto';
 import { CancelSubscriptionDto } from './dto/cancel-subscription.dto';
+import { User, UserDoc } from '../../database/schema';
+import {
+  CAMPAIGN_LIMIT,
+  getPlanName,
+  PlanName,
+} from 'src/common/constants/price.constant';
 
 @Injectable()
 export class SubscriptionService {
   private readonly logger = new Logger(SubscriptionService.name);
 
   constructor(
-    @InjectModel(User.name) private userModel: Model<UserDoc>,
+    @InjectModel('users') private userModel: Model<UserDoc>,
     @Inject('STRIPE_CLIENT') private stripe: Stripe,
     private readonly stripeCustomerService: StripeCustomerService,
   ) {}
@@ -169,7 +174,7 @@ export class SubscriptionService {
     stripeSubscription: Stripe.Subscription,
     priceId: string,
   ): Promise<void> {
-    const updateData = {
+    const updateData: Partial<User> = {
       stripeSubscriptionId: stripeSubscription.id,
       subscriptionStatus: stripeSubscription.status,
       paymentStatus:
@@ -187,6 +192,7 @@ export class SubscriptionService {
         stripeSubscription.status,
       ),
       lastStripeSync: new Date(),
+      planTier: getPlanName(priceId),
     };
 
     this.logger.log(
@@ -796,5 +802,23 @@ export class SubscriptionService {
     this.logger.log(
       `Cleared subscription data for user ${userId} as it no longer exists in Stripe.`,
     );
+  }
+
+  async fetchSubDetails(userId: string) {
+    const user = await this.userModel.findById(userId);
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const plan = user.planTier as PlanName;
+
+    // fetch subscription limits
+    const limit = CAMPAIGN_LIMIT[plan];
+
+    return {
+      planTier: plan,
+      campaignLimit: limit,
+    };
   }
 }

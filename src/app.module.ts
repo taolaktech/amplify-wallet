@@ -4,6 +4,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import stripeConfig from './config/stripe.config';
 import databaseConfig from './config/database.config';
 import { MongooseModule } from '@nestjs/mongoose';
+import { DatabaseModule } from './database/database.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { MongooseModule } from '@nestjs/mongoose';
         ...configService.get('database.options'),
       }),
     }),
+    DatabaseModule,
   ],
   controllers: [],
   providers: [],

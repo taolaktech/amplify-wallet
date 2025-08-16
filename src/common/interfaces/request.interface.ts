@@ -1,5 +1,5 @@
 import { Request } from 'express';
-import { User, UserDoc } from '../../modules/customer/schemas/user.schema';
+import { UserDoc } from '../../database/schema';
 
 // export class UserDocument {
 //   _id: string;
