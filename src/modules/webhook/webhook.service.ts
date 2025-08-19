@@ -688,7 +688,7 @@ export class WebhookService {
 
       // increment the users wallet balance
       await this.walletModel.findOneAndUpdate(
-        { userId: existingTransaction.userId },
+        { userId: existingTransaction.userId.toString() },
         {
           $inc: { balance: paymentIntent.amount },
         },

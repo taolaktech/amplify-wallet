@@ -12,7 +12,7 @@ export class Wallet {
     unique: true,
     index: true,
   })
-  userId: Types.ObjectId;
+  userId: string;
 
   @Prop({
     type: Number,

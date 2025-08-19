@@ -95,6 +95,9 @@ export class WalletService {
             );
             // start a mongoose transaction
             session.startTransaction();
+            this.logger.log(
+              `::: Topping up user ${user._id.toString()} with amount ${walletTopUpBody.amount * 100} :::`,
+            );
             // create a transaction with status COMPLETED
             const createdTransaction = (await this.transactionModel.create(
               [
@@ -114,11 +117,29 @@ export class WalletService {
             )) as unknown as TransactionDocument;
 
             // increment the user's wallet balance
-            await this.walletModel.findOneAndUpdate(
-              { userId: user._id },
+            const updateResult = await this.walletModel.updateOne(
+              { userId: user._id.toString() },
               { $inc: { balance: walletTopUpBody.amount * 100 } },
               { session },
             );
+
+            // Crucial logging to diagnose the issue
+            this.logger.log(
+              `::: Wallet balance update result for user ${user._id}: ${JSON.stringify(updateResult)} :::`,
+            );
+
+            // If no document was matched or modified, it means the wallet didn't exist
+            if (updateResult.matchedCount === 0) {
+              this.logger.error(
+                `::: No wallet found for user ${user._id}. Wallet was not topped up. :::`,
+              );
+              // Depending on your business logic, you might want to create the wallet here
+              // or throw a specific error indicating that the wallet doesn't exist.
+              // For a financial transaction, failing explicitly is better than silent success.
+              throw new InternalServerErrorException(
+                'User wallet not found or could not be updated.',
+              );
+            }
 
             // commit the transaction
             await session.commitTransaction();
@@ -256,7 +277,7 @@ export class WalletService {
 
       // Get current wallet state for metadata
       let userWallet = await this.walletModel.findOne({
-        userId: new Types.ObjectId(debitData.userId),
+        userId: debitData.userId.toString(),
       });
 
       if (!userWallet) {
@@ -382,7 +403,7 @@ export class WalletService {
 
     // create wallet
     const createdWallet = await this.walletModel.create({
-      userId: user._id,
+      userId: user._id.toString(),
       status: 'ACTIVE',
     });
 
@@ -396,10 +417,13 @@ export class WalletService {
 
   async fetchWalletBalance(userId: Types.ObjectId) {
     let wallet = await this.walletModel.findOne({
-      userId: new Types.ObjectId(userId),
+      userId: userId.toString(),
     });
 
     if (!wallet) {
+      this.logger.log(
+        `::: No wallet found for user ${userId.toString()}, creating a new wallet :::`,
+      );
       wallet = await this.createWalletForUser(userId.toString());
     }
 
