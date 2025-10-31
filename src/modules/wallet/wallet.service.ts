@@ -116,9 +116,37 @@ export class WalletService {
               { session },
             )) as unknown as TransactionDocument;
 
+            // Find user's wallet, or create it if it doesn't exist
+            let wallet = await this.walletModel
+              .findOne({ userId: user._id.toString() })
+              .session(session);
+
+            if (!wallet) {
+              this.logger.log(
+                `::: Wallet not found for user ${user._id}, creating one. :::`,
+              );
+              const [createdWallet] = await this.walletModel.create(
+                [
+                  {
+                    userId: user._id.toString(),
+                    status: 'ACTIVE',
+                    balance: 0,
+                  },
+                ],
+                { session },
+              );
+
+              await this.userModel.findByIdAndUpdate(
+                user._id,
+                { walletId: createdWallet._id },
+                { session },
+              );
+              wallet = createdWallet;
+            }
+
             // increment the user's wallet balance
             const updateResult = await this.walletModel.updateOne(
-              { userId: user._id.toString() },
+              { _id: wallet._id },
               { $inc: { balance: walletTopUpBody.amount * 100 } },
               { session },
             );
@@ -128,14 +156,11 @@ export class WalletService {
               `::: Wallet balance update result for user ${user._id}: ${JSON.stringify(updateResult)} :::`,
             );
 
-            // If no document was matched or modified, it means the wallet didn't exist
+            // If no document was matched, it means something went wrong with the update
             if (updateResult.matchedCount === 0) {
               this.logger.error(
-                `::: No wallet found for user ${user._id}. Wallet was not topped up. :::`,
+                `::: Wallet for user ${user._id} could not be found or updated. Wallet was not topped up. :::`,
               );
-              // Depending on your business logic, you might want to create the wallet here
-              // or throw a specific error indicating that the wallet doesn't exist.
-              // For a financial transaction, failing explicitly is better than silent success.
               throw new InternalServerErrorException(
                 'User wallet not found or could not be updated.',
               );
