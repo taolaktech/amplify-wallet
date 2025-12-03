@@ -352,7 +352,7 @@ export class SubscriptionService {
         );
       }
 
-      // DOWNGRADE LOGIC (Schedule)
+      // Downgrade Logic (Schedule)
       if (prorationBehavior === 'none') {
         this.logger.log(
           `Downgrade detected (proration: none). Scheduling change for end of period.`,
@@ -424,7 +424,7 @@ export class SubscriptionService {
         return this.stripe.subscriptions.retrieve(user.stripeSubscriptionId);
       }
 
-      // UPGRADE / IMMEDIATE CHANGE LOGIC (Standard)
+      // Upgrade / Immediate Change Logic (Standard)
       
       // 3. Prepare parameters for updating the subscription
       const updateParams: Stripe.SubscriptionUpdateParams = {
