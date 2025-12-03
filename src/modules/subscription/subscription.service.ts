@@ -1,25 +1,25 @@
 import {
-  Injectable,
-  Inject,
-  Logger,
-  NotFoundException,
   BadRequestException,
   HttpException,
+  Inject,
+  Injectable,
+  Logger,
+  NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
-import Stripe from 'stripe';
-import { StripeCustomerService } from '../customer/customer.service';
-import { CreateSubscriptionDto } from './dto/create-subscription.dto';
-import { ChangePlanDto } from './dto/change-subscription.dto';
-import { SubscriptionResponseDto } from './dto/subscription-response.dto';
-import { CancelSubscriptionDto } from './dto/cancel-subscription.dto';
-import { User, UserDoc } from '../../database/schema';
 import {
   CAMPAIGN_LIMIT,
   getPlanName,
   PlanName,
 } from 'src/common/constants/price.constant';
+import Stripe from 'stripe';
+import { User, UserDoc } from '../../database/schema';
+import { StripeCustomerService } from '../customer/customer.service';
+import { CancelSubscriptionDto } from './dto/cancel-subscription.dto';
+import { ChangePlanDto } from './dto/change-subscription.dto';
+import { CreateSubscriptionDto } from './dto/create-subscription.dto';
+import { SubscriptionResponseDto } from './dto/subscription-response.dto';
 
 @Injectable()
 export class SubscriptionService {
@@ -306,12 +306,11 @@ export class SubscriptionService {
       }
 
       // 2. Retrieve the current subscription from Stripe to get its items
-      // This is crucial to find the ID of the subscription item to update.
       let currentSubscription: Stripe.Subscription;
       try {
         currentSubscription = await this.stripe.subscriptions.retrieve(
           user.stripeSubscriptionId,
-          { expand: ['items'] }, // Expand items to get their IDs
+          { expand: ['items', 'schedule'] }, // Expand items and schedule
         );
       } catch (error) {
         this.logger.error(
@@ -319,11 +318,10 @@ export class SubscriptionService {
           error.stack,
         );
         if (error.code === 'resource_missing') {
-          // Local DB might be out of sync. Clear local subscription data.
           await this.userModel.findByIdAndUpdate(userId, {
             stripeSubscriptionId: null,
             activeStripePriceId: null,
-            subscriptionStatus: 'canceled', // Or some other inactive status
+            subscriptionStatus: 'canceled',
             hasActiveSubscription: false,
           });
           throw new NotFoundException(
@@ -347,40 +345,97 @@ export class SubscriptionService {
         );
       }
 
-      /**
-       * Assuming the base plan is the first item (or the only item since commission is
-       * separate)
-       * If you had multiple items, you'd need more sophisticated logic to find the
-       * correct one.
-       */
       const currentSubscriptionItemId = currentSubscription.items.data[0].id;
       if (!currentSubscriptionItemId) {
-        this.logger.error(
-          `Could not find a subscription item ID for subscription ${user.stripeSubscriptionId}.`,
-        );
         throw new BadRequestException(
           'Cannot identify the current subscription item to update.',
         );
       }
 
-      this.logger.log(
-        `Found current subscription item ID: ${currentSubscriptionItemId} for subscription ${user.stripeSubscriptionId}`,
-      );
+      // Downgrade Logic (Schedule)
+      if (prorationBehavior === 'none') {
+        this.logger.log(
+          `Downgrade detected (proration: none). Scheduling change for end of period.`,
+        );
 
+        let scheduleId: string;
+
+        // Check if a schedule already exists
+        if (currentSubscription.schedule) {
+          scheduleId =
+            typeof currentSubscription.schedule === 'string'
+              ? currentSubscription.schedule
+              : currentSubscription.schedule.id;
+          this.logger.log(`Using existing schedule ${scheduleId}`);
+        } else {
+          // Create a new schedule from the existing subscription
+          this.logger.log(
+            `Creating new schedule from subscription ${user.stripeSubscriptionId}`,
+          );
+          const schedule = await this.stripe.subscriptionSchedules.create({
+            from_subscription: user.stripeSubscriptionId,
+          });
+          scheduleId = schedule.id;
+        }
+
+        // Update the schedule to switch to the new price at the end of the current period
+        // We define phases:
+        // Phase 1: Current Plan (runs until current_period_end) - Stripe handles this with 'from_subscription' or existing phases
+        // Phase 2: New Plan (starts at current_period_end)
+        
+        // Note: When updating phases, we must be careful. 
+        // If we just created it from subscription, it has one phase.
+        // We want to append a phase or ensure the next phase is our new price.
+        
+        // A robust way is to update the schedule with the new phases configuration.
+        // We need to know the current phase end date (which is current_period_end).
+        
+        await this.stripe.subscriptionSchedules.update(scheduleId, {
+          end_behavior: 'release',
+          phases: [
+            {
+              items: [
+                {
+                  price: currentSubscription.items.data[0].price.id,
+                  quantity: currentSubscription.items.data[0].quantity,
+                },
+              ],
+              start_date: 'now', // Updates the current phase
+              end_date: currentSubscription.items.data[0].current_period_end, // Ends at the billing cycle
+            },
+            {
+              items: [
+                {
+                  price: newPriceId,
+                },
+              ],
+              start_date: currentSubscription.items.data[0].current_period_end, // Starts when the previous one ends
+            },
+          ],
+        });
+
+        this.logger.log(
+          `Successfully scheduled downgrade to ${newPriceId} for end of period on schedule ${scheduleId}`,
+        );
+
+        // We return the subscription. It won't show the new price yet.
+        // We might want to update the local DB to indicate a "pending change" if we had a field for it,
+        // but for now we just leave it as is (Active on Old Plan).
+        return this.stripe.subscriptions.retrieve(user.stripeSubscriptionId);
+      }
+
+      // Upgrade / Immediate Change Logic (Standard)
+      
       // 3. Prepare parameters for updating the subscription
       const updateParams: Stripe.SubscriptionUpdateParams = {
         items: [
           {
             id: currentSubscriptionItemId, // The ID of the subscription item to modify
             price: newPriceId, // The ID of the new price
-            // quantity: 1, // If your prices are quantity-based
           },
-          // If you were to remove other items (like an old commission item), you'd add:
-          // { id: oldOtherItemId, deleted: true }
         ],
         proration_behavior: prorationBehavior,
-        // payment_behavior: 'default_incomplete', // Optional: For finer control over payment failures on prorated invoices
-        expand: ['latest_invoice', 'pending_setup_intent'], // To check for immediate payment on upgrade
+        expand: ['latest_invoice', 'pending_setup_intent'],
       };
 
       // 4. Call Stripe to update the subscription
