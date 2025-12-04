@@ -379,16 +379,20 @@ export class SubscriptionService {
         }
 
         // Update the schedule to switch to the new price at the end of the current period
-        // We define phases:
-        // Phase 1: Current Plan (runs until current_period_end) - Stripe handles this with 'from_subscription' or existing phases
-        // Phase 2: New Plan (starts at current_period_end)
+        // When a schedule is created from a subscription, it automatically has the current phase.
+        // We need to add a new phase that starts at current_period_end with the new price.
         
-        // Note: When updating phases, we must be careful. 
-        // If we just created it from subscription, it has one phase.
-        // We want to append a phase or ensure the next phase is our new price.
+        // Retrieve the schedule to get its current state
+        const schedule = await this.stripe.subscriptionSchedules.retrieve(scheduleId);
         
-        // A robust way is to update the schedule with the new phases configuration.
-        // We need to know the current phase end date (which is current_period_end).
+        // Get the current period end timestamp
+        const currentPeriodEnd = currentSubscription.items.data[0].current_period_end;
+        
+        // Build the phases array
+        // Phase 1: Keep the existing current phase (already running) - we must include it as-is
+        // Phase 2: New phase with the downgraded price starting at current_period_end
+        
+        const existingPhase = schedule.phases[0];
         
         await this.stripe.subscriptionSchedules.update(scheduleId, {
           end_behavior: 'release',
@@ -400,8 +404,9 @@ export class SubscriptionService {
                   quantity: currentSubscription.items.data[0].quantity,
                 },
               ],
-              start_date: 'now', // Updates the current phase
-              end_date: currentSubscription.items.data[0].current_period_end, // Ends at the billing cycle
+              // Don't modify start_date of current phase - use the existing one
+              start_date: existingPhase.start_date,
+              end_date: currentPeriodEnd,
             },
             {
               items: [
@@ -409,7 +414,7 @@ export class SubscriptionService {
                   price: newPriceId,
                 },
               ],
-              start_date: currentSubscription.items.data[0].current_period_end, // Starts when the previous one ends
+              start_date: currentPeriodEnd,
             },
           ],
         });
