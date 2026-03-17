@@ -1,7 +1,12 @@
 import { Global, Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
-import { TransactionSchema, UserSchema, WalletSchema } from './schema';
+import {
+  TokenTransactionSchema,
+  TransactionSchema,
+  UserSchema,
+  WalletSchema,
+} from './schema';
 
 @Global()
 @Module({
@@ -18,6 +23,7 @@ import { TransactionSchema, UserSchema, WalletSchema } from './schema';
       { name: 'users', schema: UserSchema },
       { name: 'transactions', schema: TransactionSchema },
       { name: 'wallets', schema: WalletSchema },
+      { name: 'token-transactions', schema: TokenTransactionSchema },
     ]),
   ],
   exports: [MongooseModule],
