@@ -295,10 +295,9 @@ export class WebhookService {
   }
 
   private getTokenTopUpAmountForPriceId(priceId: string): number {
-    if (priceId === PRODUCT_PLANS.starter.monthly) return 1_000;
+    if (priceId === PRODUCT_PLANS.starter.monthly) return 500;
     if (priceId === PRODUCT_PLANS.starter.quarterly) return 3_000;
     if (priceId === PRODUCT_PLANS.starter.annual) return 12_000;
-
     if (priceId === PRODUCT_PLANS.grow.monthly) return 1_500;
     if (priceId === PRODUCT_PLANS.grow.quarterly) return 5_000;
     if (priceId === PRODUCT_PLANS.grow.annual) return 20_000;
