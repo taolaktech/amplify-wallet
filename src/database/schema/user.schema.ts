@@ -63,9 +63,6 @@ export class User {
   @Prop({ enum: ['active', 'past_due', 'canceled', 'none'], default: 'none' })
   paymentStatus?: string;
 
-  // @Prop({ default: 0 })
-  // walletBalance: number; // in cents
-
   @Prop({ enum: ['free', 'starter', 'grow', 'scale'], default: 'free' })
   planTier: string;
 
@@ -74,6 +71,12 @@ export class User {
 
   @Prop({ type: Number, default: 0 })
   tokenBalance: number;
+
+  @Prop({ type: Number, default: 0 })
+  memoryUsedInMB: number;
+
+  @Prop({ type: Number, default: 0 })
+  memoryLimitInMB: number;
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);
