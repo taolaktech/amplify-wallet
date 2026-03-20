@@ -6,7 +6,9 @@ export type TokenTransactionDocument = HydratedDocument<TokenTransaction>;
 export type TokenTransactionType = 'credit' | 'debit';
 export type TokenTransactionReason =
   | 'generation'
-  | 'refund'
+  | 'generation_reserve'
+  | 'generation_overage'
+  | 'generation_reserve_refund'
   | 'subscription_topup';
 
 @Schema({ timestamps: true })
@@ -36,17 +38,24 @@ export class TokenTransaction {
   @Prop({
     type: String,
     required: true,
-    enum: ['generation', 'refund', 'subscription_topup'],
+    enum: [
+      'generation',
+      'generation_reserve',
+      'generation_overage',
+      'generation_reserve_refund',
+      'subscription_topup',
+    ],
     index: true,
   })
   reason: TokenTransactionReason;
 
   @Prop({
-    type: String,
+    type: Types.ObjectId,
+    ref: 'assets',
     required: false,
     index: true,
   })
-  referenceId?: string;
+  assetId?: Types.ObjectId;
 
   @Prop({
     type: Number,
@@ -55,6 +64,5 @@ export class TokenTransaction {
   balanceAfter: number;
 }
 
-export const TokenTransactionSchema = SchemaFactory.createForClass(
-  TokenTransaction,
-);
+export const TokenTransactionSchema =
+  SchemaFactory.createForClass(TokenTransaction);
