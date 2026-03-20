@@ -381,19 +381,21 @@ export class SubscriptionService {
         // Update the schedule to switch to the new price at the end of the current period
         // When a schedule is created from a subscription, it automatically has the current phase.
         // We need to add a new phase that starts at current_period_end with the new price.
-        
+
         // Retrieve the schedule to get its current state
-        const schedule = await this.stripe.subscriptionSchedules.retrieve(scheduleId);
-        
+        const schedule =
+          await this.stripe.subscriptionSchedules.retrieve(scheduleId);
+
         // Get the current period end timestamp
-        const currentPeriodEnd = currentSubscription.items.data[0].current_period_end;
-        
+        const currentPeriodEnd =
+          currentSubscription.items.data[0].current_period_end;
+
         // Build the phases array
         // Phase 1: Keep the existing current phase (already running) - we must include it as-is
         // Phase 2: New phase with the downgraded price starting at current_period_end
-        
+
         const existingPhase = schedule.phases[0];
-        
+
         await this.stripe.subscriptionSchedules.update(scheduleId, {
           end_behavior: 'release',
           phases: [
@@ -430,7 +432,7 @@ export class SubscriptionService {
       }
 
       // Upgrade / Immediate Change Logic (Standard)
-      
+
       // 3. Prepare parameters for updating the subscription
       const updateParams: Stripe.SubscriptionUpdateParams = {
         items: [

@@ -71,6 +71,9 @@ export class User {
 
   @Prop({ type: Types.ObjectId, ref: 'wallets', required: false })
   walletId?: string;
+
+  @Prop({ type: Number, default: 0 })
+  tokenBalance: number;
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);

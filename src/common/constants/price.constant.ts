@@ -24,14 +24,14 @@ export type PlanName = keyof typeof PRODUCT_PLANS;
 /*
  * function that takes in price id and returns the plan tier/name
  */
-export function getPlanName(priceId: string): PlanName | 'Unknown' {
+export function getPlanName(priceId: string): PlanName | 'unknown' {
   const plan = Object.keys(PRODUCT_PLANS).find((plan) => {
     return Object.values(PRODUCT_PLANS[plan as PlanName]).includes(
       priceId as any,
     );
   });
 
-  return (plan as PlanName) || 'Unknown';
+  return (plan as PlanName) || 'unknown';
 }
 
 export const CAMPAIGN_LIMIT: Record<PlanName, number> = {

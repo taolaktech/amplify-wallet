@@ -6,15 +6,20 @@ import {
   Logger,
 } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
-import mongoose, { Model, startSession } from 'mongoose';
+import mongoose, { Model } from 'mongoose';
 import Stripe from 'stripe';
 import {
   TransactionDocument,
+  TokenTransactionDocument,
   UserDoc,
   WalletDocument,
 } from '../../database/schema';
 import { ConfigService } from '@nestjs/config';
 import { TRANSACTION_STATUS } from 'src/common/types/transaction.types';
+import {
+  getPlanName,
+  PRODUCT_PLANS,
+} from 'src/common/constants/price.constant';
 
 @Injectable()
 export class WebhookService {
@@ -26,6 +31,8 @@ export class WebhookService {
     @InjectModel('users') private userModel: Model<UserDoc>,
     @InjectModel('transactions')
     private transactionModel: Model<TransactionDocument>,
+    @InjectModel('token-transactions')
+    private tokenTransactionModel: Model<TokenTransactionDocument>,
     @InjectConnection() private readonly connection: mongoose.Connection,
     @InjectModel('wallets') private walletModel: Model<WalletDocument>,
     @Inject('STRIPE_CLIENT') private stripe: Stripe,
@@ -195,6 +202,8 @@ export class WebhookService {
       lastStripeSync: new Date(),
     };
 
+    const topUpReferenceId = invoice.id;
+
     // Get subscription ID from invoice lines **
     let subscriptionIdFromInvoice: string | null = null;
     if (invoice.lines && invoice.lines.data && invoice.lines.data.length > 0) {
@@ -230,7 +239,26 @@ export class WebhookService {
           subscription.items.data.length > 0 &&
           subscription.items.data[0].price
         ) {
-          updateData.activeStripePriceId = subscription.items.data[0].price.id;
+          const priceId = subscription.items.data[0].price.id;
+          updateData.activeStripePriceId = priceId;
+
+          const planTier = getPlanName(priceId);
+          if (planTier !== 'unknown') {
+            updateData.planTier = planTier;
+          }
+
+          const tokenTopUpAmount = this.getTokenTopUpAmountForPriceId(priceId);
+          if (tokenTopUpAmount > 0) {
+            await this.creditTokensForSubscriptionTopUp({
+              userId: user._id.toString(),
+              amount: tokenTopUpAmount,
+              referenceId: topUpReferenceId,
+            });
+          } else {
+            this.logger.warn(
+              `No token top-up configured for priceId ${priceId}. Skipping token credit for invoice ${invoice.id}.`,
+            );
+          }
         } else {
           this.logger.warn(
             `Subscription ${subscription.id} has no items or item price. Cannot set activeStripePriceId.`,
@@ -264,6 +292,83 @@ export class WebhookService {
     );
 
     // Send receipt/notification
+  }
+
+  private getTokenTopUpAmountForPriceId(priceId: string): number {
+    if (priceId === PRODUCT_PLANS.starter.monthly) return 500;
+    if (priceId === PRODUCT_PLANS.starter.quarterly) return 3_000;
+    if (priceId === PRODUCT_PLANS.starter.annual) return 12_000;
+    if (priceId === PRODUCT_PLANS.grow.monthly) return 1_500;
+    if (priceId === PRODUCT_PLANS.grow.quarterly) return 5_000;
+    if (priceId === PRODUCT_PLANS.grow.annual) return 20_000;
+
+    if (priceId === PRODUCT_PLANS.scale.monthly) return 3_000;
+    if (priceId === PRODUCT_PLANS.scale.quarterly) return 9_000;
+    if (priceId === PRODUCT_PLANS.scale.annual) return 50_000;
+
+    return 0;
+  }
+
+  private async creditTokensForSubscriptionTopUp(params: {
+    userId: string;
+    amount: number;
+    referenceId: string;
+  }): Promise<void> {
+    const { userId, amount, referenceId } = params;
+
+    const existing = await this.tokenTransactionModel.exists({
+      userId: new mongoose.Types.ObjectId(userId),
+      reason: 'subscription_topup',
+      referenceId,
+      type: 'credit',
+    });
+
+    if (existing) {
+      this.logger.log(
+        `Token top-up already processed for user ${userId}, referenceId ${referenceId}. Skipping.`,
+      );
+      return;
+    }
+
+    const session = await this.connection.startSession();
+    try {
+      session.startTransaction();
+
+      const updatedUser = await this.userModel.findByIdAndUpdate(
+        userId,
+        { $inc: { tokenBalance: amount } },
+        { new: true, session },
+      );
+
+      if (!updatedUser) {
+        await session.abortTransaction();
+        this.logger.warn(
+          `Unable to credit tokens: user ${userId} not found while processing referenceId ${referenceId}.`,
+        );
+        return;
+      }
+
+      await this.tokenTransactionModel.create(
+        [
+          {
+            userId: updatedUser._id,
+            type: 'credit',
+            amount,
+            reason: 'subscription_topup',
+            referenceId,
+            balanceAfter: updatedUser.tokenBalance,
+          },
+        ],
+        { session },
+      );
+
+      await session.commitTransaction();
+    } catch (error) {
+      await session.abortTransaction();
+      throw error;
+    } finally {
+      await session.endSession();
+    }
   }
 
   /**
@@ -407,6 +512,14 @@ export class WebhookService {
       lastStripeSync: new Date(),
     };
 
+    const priceIdForPlanTier = updateData.activeStripePriceId;
+    if (priceIdForPlanTier) {
+      const planTier = getPlanName(priceIdForPlanTier);
+      if (planTier !== 'unknown') {
+        updateData.planTier = planTier;
+      }
+    }
+
     // Handle subscription status and active state based on cancellation status
     if (subscription.status === 'canceled') {
       // Subscription is fully canceled
@@ -415,6 +528,7 @@ export class WebhookService {
       updateData.stripeSubscriptionId = null;
       updateData.activeStripePriceId = null;
       updateData.currentPeriodEnd = null;
+      updateData.planTier = 'free';
     } else if (subscription.cancel_at_period_end) {
       // Subscription is scheduled for cancellation but still active
       updateData.hasActiveSubscription = ['active', 'trialing'].includes(
