@@ -17,4 +17,17 @@ export class InternalSubscriptionController {
       success: true,
     };
   }
+
+  // add an endpoint to get subscription configuration
+  @Get('/subscription-configuration')
+  async getSubscriptionConfiguration() {
+    const config =
+      await this.subscriptionService.getSubscriptionConfiguration();
+
+    return {
+      message: 'Subscription configuration fetched successfully',
+      success: true,
+      data: config,
+    };
+  }
 }
