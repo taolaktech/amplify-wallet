@@ -9,7 +9,8 @@ export type TokenTransactionReason =
   | 'generation_reserve'
   | 'generation_overage'
   | 'generation_reserve_refund'
-  | 'subscription_topup';
+  | 'subscription_topup'
+  | 'top_up_pack';
 
 @Schema({ timestamps: true })
 export class TokenTransaction {
@@ -44,6 +45,7 @@ export class TokenTransaction {
       'generation_overage',
       'generation_reserve_refund',
       'subscription_topup',
+      'top_up_pack',
     ],
     index: true,
   })

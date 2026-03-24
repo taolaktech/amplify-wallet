@@ -8,11 +8,7 @@ import {
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
-import {
-  CAMPAIGN_LIMIT,
-  getPlanName,
-  PlanName,
-} from 'src/common/constants/price.constant';
+
 import Stripe from 'stripe';
 import { User, UserDoc } from '../../database/schema';
 import { StripeCustomerService } from '../customer/customer.service';
@@ -20,6 +16,7 @@ import { CancelSubscriptionDto } from './dto/cancel-subscription.dto';
 import { ChangePlanDto } from './dto/change-subscription.dto';
 import { CreateSubscriptionDto } from './dto/create-subscription.dto';
 import { SubscriptionResponseDto } from './dto/subscription-response.dto';
+import { AppConfigService } from '../config/config.service';
 
 @Injectable()
 export class SubscriptionService {
@@ -29,6 +26,7 @@ export class SubscriptionService {
     @InjectModel('users') private userModel: Model<UserDoc>,
     @Inject('STRIPE_CLIENT') private stripe: Stripe,
     private readonly stripeCustomerService: StripeCustomerService,
+    private readonly configService: AppConfigService,
   ) {}
 
   /**
@@ -174,6 +172,7 @@ export class SubscriptionService {
     stripeSubscription: Stripe.Subscription,
     priceId: string,
   ): Promise<void> {
+    const { planTier } = this.configService.getPlanInfo(priceId);
     const updateData: Partial<User> = {
       stripeSubscriptionId: stripeSubscription.id,
       subscriptionStatus: stripeSubscription.status,
@@ -192,14 +191,26 @@ export class SubscriptionService {
         stripeSubscription.status,
       ),
       lastStripeSync: new Date(),
-      planTier: getPlanName(priceId),
     };
+
+    if (planTier !== 'unknown') {
+      updateData.planTier = planTier;
+    }
 
     this.logger.log(
       `Updating local user ${userId} with subscription data: ${JSON.stringify(updateData)}`,
     );
     await this.userModel.findByIdAndUpdate(userId, updateData);
     this.logger.log(`Successfully updated user ${userId} in local database.`);
+  }
+
+  async getSubscriptionConfiguration() {
+    return {
+      plans: Object.values(this.configService.getProductPrices()),
+      topUpPacks: Object.values(this.configService.getTopUpPackPrices()),
+      planPrices: this.configService.getProductPrices(),
+      topUpPackPrices: this.configService.getTopUpPackPrices(),
+    };
   }
 
   async createSubscription(
@@ -873,14 +884,10 @@ export class SubscriptionService {
       throw new NotFoundException('User not found');
     }
 
-    const plan = user.planTier as PlanName;
-
-    // fetch subscription limits
-    const limit = CAMPAIGN_LIMIT[plan];
+    const plan = user.planTier;
 
     return {
       planTier: plan,
-      campaignLimit: limit,
     };
   }
 }

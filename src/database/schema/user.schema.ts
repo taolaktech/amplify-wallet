@@ -2,6 +2,7 @@ import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
 
 export type UserDoc = HydratedDocument<User>;
+export type PlanTier = 'starter' | 'grow' | 'scale';
 
 @Schema({ timestamps: true })
 export class User {
@@ -63,17 +64,23 @@ export class User {
   @Prop({ enum: ['active', 'past_due', 'canceled', 'none'], default: 'none' })
   paymentStatus?: string;
 
-  // @Prop({ default: 0 })
-  // walletBalance: number; // in cents
-
-  @Prop({ enum: ['free', 'starter', 'grow', 'scale'], default: 'free' })
-  planTier: string;
+  @Prop({ enum: ['starter', 'grow', 'scale'], default: null })
+  planTier: PlanTier;
 
   @Prop({ type: Types.ObjectId, ref: 'wallets', required: false })
   walletId?: string;
 
   @Prop({ type: Number, default: 0 })
-  tokenBalance: number;
+  subscriptionTokenBalance: number;
+
+  @Prop({ type: Number, default: 0 })
+  topUpTokenBalance: number;
+
+  @Prop({ type: Number, default: 0 })
+  memoryUsedInMB: number;
+
+  @Prop({ type: Number, default: 0 })
+  memoryLimitInMB: number;
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);

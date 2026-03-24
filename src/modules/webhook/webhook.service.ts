@@ -14,12 +14,8 @@ import {
   UserDoc,
   WalletDocument,
 } from '../../database/schema';
-import { ConfigService } from '@nestjs/config';
 import { TRANSACTION_STATUS } from 'src/common/types/transaction.types';
-import {
-  getPlanName,
-  PRODUCT_PLANS,
-} from 'src/common/constants/price.constant';
+import { AppConfigService } from '../config/config.service';
 
 @Injectable()
 export class WebhookService {
@@ -27,7 +23,7 @@ export class WebhookService {
   private readonly stripeWebhookSecret: string;
 
   constructor(
-    private readonly configService: ConfigService,
+    private readonly configService: AppConfigService,
     @InjectModel('users') private userModel: Model<UserDoc>,
     @InjectModel('transactions')
     private transactionModel: Model<TransactionDocument>,
@@ -37,15 +33,77 @@ export class WebhookService {
     @InjectModel('wallets') private walletModel: Model<WalletDocument>,
     @Inject('STRIPE_CLIENT') private stripe: Stripe,
   ) {
-    this.stripeWebhookSecret = this.configService.get<string>(
-      'STRIPE_WEBHOOK_SECRET',
-    );
+    this.stripeWebhookSecret = this.configService.get('STRIPE_WEBHOOK_SECRET');
 
     if (!this.stripeWebhookSecret) {
       this.logger.error('STRIPE_WEBHOOK_SECRET is not set!');
       throw new Error(
         'Webhook signing secret is not configured on the server.',
       );
+    }
+  }
+
+  private async creditTokensForTopUpPack(params: {
+    userId: string;
+    amount: number;
+    referenceId: string;
+  }): Promise<void> {
+    const { userId, amount, referenceId } = params;
+
+    const existing = await this.tokenTransactionModel.exists({
+      userId: new mongoose.Types.ObjectId(userId),
+      reason: 'top_up_pack',
+      referenceId,
+      type: 'credit',
+    });
+
+    if (existing) {
+      this.logger.log(
+        `Top-up pack already processed for user ${userId}, referenceId ${referenceId}. Skipping.`,
+      );
+      return;
+    }
+
+    const session = await this.connection.startSession();
+    try {
+      session.startTransaction();
+
+      const updatedUser = await this.userModel.findByIdAndUpdate(
+        userId,
+        { $inc: { topUpTokenBalance: amount } },
+        { new: true, session },
+      );
+
+      if (!updatedUser) {
+        await session.abortTransaction();
+        this.logger.warn(
+          `Unable to credit top-up pack tokens: user ${userId} not found while processing referenceId ${referenceId}.`,
+        );
+        return;
+      }
+
+      await this.tokenTransactionModel.create(
+        [
+          {
+            userId: updatedUser._id,
+            type: 'credit',
+            amount,
+            reason: 'top_up_pack',
+            referenceId,
+            balanceAfter:
+              (updatedUser.subscriptionTokenBalance || 0) +
+              (updatedUser.topUpTokenBalance || 0),
+          },
+        ],
+        { session },
+      );
+
+      await session.commitTransaction();
+    } catch (error) {
+      await session.abortTransaction();
+      throw error;
+    } finally {
+      await session.endSession();
     }
   }
 
@@ -202,7 +260,46 @@ export class WebhookService {
       lastStripeSync: new Date(),
     };
 
-    const topUpReferenceId = invoice.id;
+    const referenceId = invoice.id;
+
+    // Apply top-up pack tokens if this invoice contains a one-off top-up item.
+    // This should never reset balances; it only increments topUpTokenBalance.
+    let topUpPackTokens = 0;
+    const topUpPacks = this.configService.getTopUpPackPrices();
+    if (invoice.lines && invoice.lines.data && invoice.lines.data.length > 0) {
+      for (const lineItem of invoice.lines.data) {
+        const lineItemAny = lineItem as unknown as {
+          price?: { id?: string } | string;
+          plan?: { id?: string } | string;
+        };
+
+        const linePriceId =
+          (typeof lineItemAny.price === 'string'
+            ? lineItemAny.price
+            : lineItemAny.price?.id) ||
+          (typeof lineItemAny.plan === 'string'
+            ? lineItemAny.plan
+            : lineItemAny.plan?.id);
+
+        if (!linePriceId) {
+          continue;
+        }
+
+        Object.keys(topUpPacks).forEach((packName) => {
+          if (topUpPacks[packName].priceId === linePriceId) {
+            topUpPackTokens += topUpPacks[packName].tokens;
+          }
+        });
+      }
+    }
+
+    if (topUpPackTokens > 0) {
+      await this.creditTokensForTopUpPack({
+        userId: user._id.toString(),
+        amount: topUpPackTokens,
+        referenceId,
+      });
+    }
 
     // Get subscription ID from invoice lines **
     let subscriptionIdFromInvoice: string | null = null;
@@ -242,22 +339,24 @@ export class WebhookService {
           const priceId = subscription.items.data[0].price.id;
           updateData.activeStripePriceId = priceId;
 
-          const planTier = getPlanName(priceId);
+          const { planTier, period } = this.configService.getPlanInfo(priceId);
           if (planTier !== 'unknown') {
             updateData.planTier = planTier;
           }
 
-          const tokenTopUpAmount = this.getTokenTopUpAmountForPriceId(priceId);
-          if (tokenTopUpAmount > 0) {
+          if (planTier !== 'unknown' && period !== 'unknown') {
+            const subscriptionTokenBalance =
+              this.configService.getSubscriptionTokens({
+                planTier,
+                period,
+                isTrial: subscription.status === 'trialing',
+              });
+
             await this.creditTokensForSubscriptionTopUp({
               userId: user._id.toString(),
-              amount: tokenTopUpAmount,
-              referenceId: topUpReferenceId,
+              amount: subscriptionTokenBalance,
+              referenceId,
             });
-          } else {
-            this.logger.warn(
-              `No token top-up configured for priceId ${priceId}. Skipping token credit for invoice ${invoice.id}.`,
-            );
           }
         } else {
           this.logger.warn(
@@ -294,21 +393,6 @@ export class WebhookService {
     // Send receipt/notification
   }
 
-  private getTokenTopUpAmountForPriceId(priceId: string): number {
-    if (priceId === PRODUCT_PLANS.starter.monthly) return 500;
-    if (priceId === PRODUCT_PLANS.starter.quarterly) return 3_000;
-    if (priceId === PRODUCT_PLANS.starter.annual) return 12_000;
-    if (priceId === PRODUCT_PLANS.grow.monthly) return 1_500;
-    if (priceId === PRODUCT_PLANS.grow.quarterly) return 5_000;
-    if (priceId === PRODUCT_PLANS.grow.annual) return 20_000;
-
-    if (priceId === PRODUCT_PLANS.scale.monthly) return 3_000;
-    if (priceId === PRODUCT_PLANS.scale.quarterly) return 9_000;
-    if (priceId === PRODUCT_PLANS.scale.annual) return 50_000;
-
-    return 0;
-  }
-
   private async creditTokensForSubscriptionTopUp(params: {
     userId: string;
     amount: number;
@@ -336,7 +420,7 @@ export class WebhookService {
 
       const updatedUser = await this.userModel.findByIdAndUpdate(
         userId,
-        { $inc: { tokenBalance: amount } },
+        { $set: { subscriptionTokenBalance: amount } },
         { new: true, session },
       );
 
@@ -356,7 +440,9 @@ export class WebhookService {
             amount,
             reason: 'subscription_topup',
             referenceId,
-            balanceAfter: updatedUser.tokenBalance,
+            balanceAfter:
+              (updatedUser.subscriptionTokenBalance || 0) +
+              (updatedUser.topUpTokenBalance || 0),
           },
         ],
         { session },
@@ -514,9 +600,19 @@ export class WebhookService {
 
     const priceIdForPlanTier = updateData.activeStripePriceId;
     if (priceIdForPlanTier) {
-      const planTier = getPlanName(priceIdForPlanTier);
+      const { planTier, period } =
+        this.configService.getPlanInfo(priceIdForPlanTier);
       if (planTier !== 'unknown') {
         updateData.planTier = planTier;
+      }
+
+      if (planTier !== 'unknown' && period !== 'unknown') {
+        updateData.subscriptionTokenBalance =
+          this.configService.getSubscriptionTokens({
+            planTier,
+            period,
+            isTrial: subscription.status === 'trialing',
+          });
       }
     }
 
@@ -528,7 +624,8 @@ export class WebhookService {
       updateData.stripeSubscriptionId = null;
       updateData.activeStripePriceId = null;
       updateData.currentPeriodEnd = null;
-      updateData.planTier = 'free';
+      updateData.planTier = null;
+      updateData.subscriptionTokenBalance = 0;
     } else if (subscription.cancel_at_period_end) {
       // Subscription is scheduled for cancellation but still active
       updateData.hasActiveSubscription = ['active', 'trialing'].includes(
@@ -614,6 +711,7 @@ export class WebhookService {
       currentPeriodEnd: null,
       hasActiveSubscription: false,
       paymentStatus: 'canceled',
+      subscriptionTokenBalance: 0,
       lastStripeSync: new Date(),
     };
 
