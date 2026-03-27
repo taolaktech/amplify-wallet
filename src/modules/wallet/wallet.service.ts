@@ -23,6 +23,7 @@ import {
   TRANSACTION_TYPE,
 } from 'src/common/types/transaction.types';
 import { DebitCampaignDto } from './dto/debit-campaign.dto';
+import { AppConfigService } from '../config/config.service';
 
 @Injectable()
 export class WalletService {
@@ -35,7 +36,132 @@ export class WalletService {
     @InjectModel('wallets') private walletModel: Model<WalletDocument>,
     @InjectConnection() private readonly connection: mongoose.Connection,
     @Inject('STRIPE_CLIENT') private stripe: Stripe,
+    private readonly configService: AppConfigService,
   ) {}
+
+  async listCreditsTopUpPacks(): Promise<
+    Array<{
+      priceId: string;
+      tokens: number;
+      unitAmount: number | null;
+      currency: string | null;
+    }>
+  > {
+    const topUpPacks = this.configService.getTopUpPackPrices();
+    const entries = Object.values(topUpPacks);
+
+    const uniquePriceIds = Array.from(new Set(entries.map((e) => e.priceId)));
+
+    const prices = await Promise.all(
+      uniquePriceIds.map((id) =>
+        this.stripe.prices
+          .retrieve(id)
+          .catch(() => null as unknown as Stripe.Price | null),
+      ),
+    );
+
+    const priceById = new Map<string, Stripe.Price>();
+    for (const p of prices) {
+      if (p && typeof p.id === 'string') {
+        priceById.set(p.id, p);
+      }
+    }
+
+    return entries.map((e) => {
+      const stripePrice = priceById.get(e.priceId);
+      return {
+        priceId: e.priceId,
+        tokens: e.tokens,
+        unitAmount:
+          typeof stripePrice?.unit_amount === 'number'
+            ? stripePrice.unit_amount
+            : null,
+        currency:
+          typeof stripePrice?.currency === 'string'
+            ? stripePrice.currency
+            : null,
+      };
+    });
+  }
+
+  async createCreditsCheckoutSession(params: {
+    user: UserDoc;
+    origin?: string;
+    priceId?: string;
+  }): Promise<string> {
+    const { user, origin, priceId: selectedPriceId } = params;
+
+    if (!user?.stripeCustomerId) {
+      throw new BadRequestException('Stripe customer not found for user');
+    }
+
+    try {
+      const topUpPacks = this.configService.getTopUpPackPrices();
+      const allowedPriceIds = new Set(
+        Object.values(topUpPacks).map((p) => p.priceId),
+      );
+
+      let priceIdToUse: string | undefined = selectedPriceId;
+      if (priceIdToUse && !allowedPriceIds.has(priceIdToUse)) {
+        throw new BadRequestException('Invalid priceId');
+      }
+
+      if (!priceIdToUse) {
+        const fallback = Object.values(topUpPacks)[0]?.priceId;
+        if (!fallback) {
+          throw new BadRequestException('No top-up packs are configured');
+        }
+        priceIdToUse = fallback;
+      }
+
+      const stripePrice = await this.stripe.prices.retrieve(priceIdToUse);
+      const isOneTime =
+        stripePrice?.type === 'one_time' && !stripePrice?.recurring;
+      if (!isOneTime) {
+        throw new BadRequestException(
+          'Selected price must be a one-time price (not recurring)',
+        );
+      }
+
+      const baseUrl = origin || 'http://localhost:3000';
+
+      const session = await this.stripe.checkout.sessions.create({
+        mode: 'payment',
+        customer: user.stripeCustomerId,
+        line_items: [{ price: priceIdToUse, quantity: 1 }],
+        success_url: `${baseUrl}/settings/usage?checkout=success`,
+        cancel_url: `${baseUrl}/settings/usage?checkout=cancel`,
+        client_reference_id: user._id.toString(),
+        metadata: {
+          userId: user._id.toString(),
+          reason: 'top_up_pack',
+        },
+      });
+
+      if (!session.url) {
+        throw new InternalServerErrorException(
+          'Stripe checkout session created without a redirect URL',
+        );
+      }
+
+      return session.url;
+    } catch (error) {
+      const stripeMessage =
+        typeof error?.message === 'string' ? error.message : null;
+      this.logger.error(
+        `Failed to create credits checkout session for user ${user._id}: ${stripeMessage || 'Unknown error'}`,
+        error?.stack,
+      );
+
+      if (error instanceof HttpException) {
+        throw error;
+      }
+
+      throw new InternalServerErrorException(
+        stripeMessage || 'Failed to create checkout session',
+      );
+    }
+  }
 
   async topUpWallet(
     user: UserDoc,

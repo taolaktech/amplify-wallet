@@ -192,6 +192,11 @@ export class WebhookService {
             stripeEventObject as Stripe.PaymentIntent,
           );
           break;
+        case 'checkout.session.completed':
+          await this.handleCheckoutSessionCompleted(
+            stripeEventObject as Stripe.Checkout.Session,
+          );
+          break;
         // === Other useful events you might add later ===
         // case 'customer.subscription.trial_will_end':
         //   // Handle trial ending soon notifications
@@ -222,6 +227,81 @@ export class WebhookService {
 
     // If we reach here, it means the event was either handled or was an unhandled type
     // The controller will send a 200 OK back to Stripe.
+  }
+
+  private async handleCheckoutSessionCompleted(
+    session: Stripe.Checkout.Session,
+  ): Promise<void> {
+    this.logger.log(
+      `Handling 'checkout.session.completed': Session ID ${session.id}, Mode ${session.mode}, Payment status ${session.payment_status}`,
+    );
+
+    if (session.mode !== 'payment') {
+      return;
+    }
+
+    if (session.payment_status !== 'paid') {
+      return;
+    }
+
+    if (!session.customer || typeof session.customer !== 'string') {
+      this.logger.warn(
+        `'checkout.session.completed' ${session.id} missing customer id. Skipping.`,
+      );
+      return;
+    }
+
+    const user = await this.userModel.findOne({
+      stripeCustomerId: session.customer,
+    });
+
+    if (!user) {
+      this.logger.warn(
+        `User not found for Stripe Customer ID: ${session.customer} from checkout.session.completed ${session.id}.`,
+      );
+      return;
+    }
+
+    const fullSession = await this.stripe.checkout.sessions.retrieve(
+      session.id,
+      {
+        expand: ['line_items.data.price'],
+      },
+    );
+
+    const lineItems =
+      (fullSession.line_items as Stripe.ApiList<Stripe.LineItem> | null)
+        ?.data || [];
+
+    const topUpPacks = this.configService.getTopUpPackPrices();
+    let topUpPackTokens = 0;
+
+    for (const lineItem of lineItems) {
+      const priceId =
+        typeof lineItem.price === 'string'
+          ? lineItem.price
+          : lineItem.price?.id;
+      if (!priceId) continue;
+
+      Object.keys(topUpPacks).forEach((packName) => {
+        if (topUpPacks[packName].priceId === priceId) {
+          topUpPackTokens += topUpPacks[packName].tokens;
+        }
+      });
+    }
+
+    if (topUpPackTokens <= 0) {
+      this.logger.log(
+        `checkout.session.completed ${session.id} had no recognized top-up pack items. Skipping credit.`,
+      );
+      return;
+    }
+
+    await this.creditTokensForTopUpPack({
+      userId: user._id.toString(),
+      amount: topUpPackTokens,
+      referenceId: session.id,
+    });
   }
 
   /**

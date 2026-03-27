@@ -22,6 +22,7 @@ import { ApiResult } from 'src/common/interfaces/response.interface';
 import Stripe from 'stripe';
 import { TransactionDocument } from 'src/database/schema';
 import { AuthGuard } from 'src/common/guards/auth.guard';
+import { CreateCreditsCheckoutSessionDto } from './dto/create-credits-checkout-session.dto';
 
 interface TransactionPendingResponse {
   status: string;
@@ -140,6 +141,55 @@ export class WalletController {
     return {
       data: balance,
       message: "Successfully fetched user's balance",
+      success: true,
+    };
+  }
+
+  @Get('credits/top-up-packs')
+  @UseGuards(AuthGuard)
+  @ApiOperation({
+    summary: 'List available credit top-up packs and their Stripe prices',
+  })
+  async getCreditsTopUpPacks(): Promise<
+    ApiResult<
+      Array<{
+        priceId: string;
+        tokens: number;
+        unitAmount: number | null;
+        currency: string | null;
+      }>
+    >
+  > {
+    const packs = await this.walletService.listCreditsTopUpPacks();
+
+    return {
+      data: packs,
+      message: 'Top-up packs fetched successfully',
+      success: true,
+    };
+  }
+
+  @Post('credits/checkout-session')
+  @UseGuards(AuthGuard)
+  @ApiOperation({
+    summary: 'Create a Stripe Checkout session for buying more credits',
+  })
+  async createCreditsCheckoutSession(
+    @Req() request: ExtendedRequest,
+    @Body() body: CreateCreditsCheckoutSessionDto,
+    @Headers('origin') origin: string | undefined,
+  ): Promise<ApiResult<{ url: string }>> {
+    const user = request['authenticatedData'];
+
+    const url = await this.walletService.createCreditsCheckoutSession({
+      user,
+      origin,
+      priceId: body?.priceId,
+    });
+
+    return {
+      data: { url },
+      message: 'Checkout session created successfully',
       success: true,
     };
   }
