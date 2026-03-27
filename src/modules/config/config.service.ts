@@ -99,11 +99,12 @@ export class AppConfigService {
     let period: PlanPeriod | 'unknown' = 'unknown';
 
     Object.keys(productPriceIds).forEach((p) => {
-      Object.keys(productPriceIds[p]).forEach((period) => {
-        if (productPriceIds[p][period] === priceId) {
+      Object.keys(productPriceIds[p]).forEach((planPeriod) => {
+        if (productPriceIds[p][planPeriod] === priceId) {
           planTier = p as PlanTier;
-          period = period as PlanPeriod;
-          tokens = this.getProductTokens()[p][period];
+          period = planPeriod as PlanPeriod;
+          tokens =
+            this.getProductTokens()[p as PlanTier][planPeriod as PlanPeriod];
         }
       });
     });
