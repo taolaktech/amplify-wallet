@@ -886,8 +886,13 @@ export class SubscriptionService {
 
     const plan = user.planTier;
 
+    const memoryLimitInMB = plan
+      ? this.configService.getMemoryLimitInMB(plan)
+      : 0;
+
     return {
       planTier: plan,
+      memoryLimitInMB,
     };
   }
 }

@@ -122,4 +122,11 @@ export class AppConfigService {
       ? this.getProductTokens()[planTier].trial
       : this.getProductTokens()[planTier][period];
   }
+
+  getMemoryLimitInMB(planTier: PlanTier): number {
+    if (planTier === 'starter') return this.get('STARTER_MEMORY_LIMIT_MB');
+    if (planTier === 'grow') return this.get('GROW_MEMORY_LIMIT_MB');
+    if (planTier === 'scale') return this.get('SCALE_MEMORY_LIMIT_MB');
+    return 0;
+  }
 }

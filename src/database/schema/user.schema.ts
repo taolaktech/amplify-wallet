@@ -78,9 +78,6 @@ export class User {
 
   @Prop({ type: Number, default: 0 })
   memoryUsedInMB: number;
-
-  @Prop({ type: Number, default: 0 })
-  memoryLimitInMB: number;
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);

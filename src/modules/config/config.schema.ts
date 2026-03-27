@@ -63,6 +63,10 @@ export const configSchema = z.object({
   TOP_UP_PACK_1000_TOKENS: numberFromEnv('TOP_UP_PACK_1000_TOKENS'),
   TOP_UP_PACK_2000_TOKENS: numberFromEnv('TOP_UP_PACK_2000_TOKENS'),
   TOP_UP_PACK_4000_TOKENS: numberFromEnv('TOP_UP_PACK_4000_TOKENS'),
+
+  STARTER_MEMORY_LIMIT_MB: numberFromEnv('STARTER_MEMORY_LIMIT_MB'),
+  GROW_MEMORY_LIMIT_MB: numberFromEnv('GROW_MEMORY_LIMIT_MB'),
+  SCALE_MEMORY_LIMIT_MB: numberFromEnv('SCALE_MEMORY_LIMIT_MB'),
 });
 
 export type AppConfig = z.infer<typeof configSchema>;
