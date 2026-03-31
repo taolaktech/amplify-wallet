@@ -52,6 +52,13 @@ export class TokenTransaction {
   reason: TokenTransactionReason;
 
   @Prop({
+    type: String,
+    required: false,
+    index: true,
+  })
+  referenceId?: string; //invoice id from stripe
+
+  @Prop({
     type: Types.ObjectId,
     ref: 'assets',
     required: false,
@@ -68,3 +75,11 @@ export class TokenTransaction {
 
 export const TokenTransactionSchema =
   SchemaFactory.createForClass(TokenTransaction);
+
+TokenTransactionSchema.index(
+  { userId: 1, reason: 1, type: 1, referenceId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { referenceId: { $type: 'string' } },
+  },
+);

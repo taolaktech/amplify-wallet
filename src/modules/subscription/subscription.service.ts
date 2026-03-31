@@ -7,10 +7,11 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { InjectConnection } from '@nestjs/mongoose';
+import mongoose, { Model } from 'mongoose';
 
 import Stripe from 'stripe';
-import { User, UserDoc } from '../../database/schema';
+import { TokenTransactionDocument, User, UserDoc } from '../../database/schema';
 import { StripeCustomerService } from '../customer/customer.service';
 import { CancelSubscriptionDto } from './dto/cancel-subscription.dto';
 import { ChangePlanDto } from './dto/change-subscription.dto';
@@ -24,10 +25,126 @@ export class SubscriptionService {
 
   constructor(
     @InjectModel('users') private userModel: Model<UserDoc>,
+    @InjectModel('token-transactions')
+    private tokenTransactionModel: Model<TokenTransactionDocument>,
+    @InjectConnection() private readonly connection: mongoose.Connection,
     @Inject('STRIPE_CLIENT') private stripe: Stripe,
     private readonly stripeCustomerService: StripeCustomerService,
     private readonly configService: AppConfigService,
   ) {}
+
+  private async reconcileLatestSubscriptionTokenDeposit(params: {
+    user: UserDoc;
+    stripeSubscription: Stripe.Subscription;
+  }): Promise<void> {
+    const { user, stripeSubscription } = params;
+
+    const eligibleStatuses = new Set(['active', 'trialing']);
+    if (!eligibleStatuses.has(stripeSubscription.status)) {
+      return;
+    }
+
+    try {
+      const invoices = await this.stripe.invoices.list({
+        subscription: stripeSubscription.id,
+        limit: 10,
+      });
+
+      const latestPaidCycleInvoice = (invoices?.data || []).find((inv) => {
+        const paid = inv.status === 'paid';
+        const isCycle = inv.billing_reason === 'subscription_cycle';
+        return paid && isCycle;
+      });
+
+      if (!latestPaidCycleInvoice?.id) {
+        return;
+      }
+
+      const referenceId = latestPaidCycleInvoice.id;
+
+      const existing = await this.tokenTransactionModel.exists({
+        userId: user._id,
+        reason: 'subscription_topup',
+        referenceId,
+        type: 'credit',
+      });
+
+      if (existing) {
+        return;
+      }
+
+      const priceId =
+        stripeSubscription.items &&
+        stripeSubscription.items.data &&
+        stripeSubscription.items.data.length > 0 &&
+        stripeSubscription.items.data[0].price
+          ? stripeSubscription.items.data[0].price.id
+          : null;
+
+      if (!priceId) {
+        return;
+      }
+
+      const { planTier, period } = this.configService.getPlanInfo(priceId);
+      if (planTier === 'unknown' || period === 'unknown') {
+        return;
+      }
+
+      const subscriptionTokenBalance = this.configService.getSubscriptionTokens(
+        {
+          planTier,
+          period,
+          isTrial: stripeSubscription.status === 'trialing',
+        },
+      );
+
+      const session = await this.connection.startSession();
+      try {
+        session.startTransaction();
+
+        const updatedUser = await this.userModel.findByIdAndUpdate(
+          user._id,
+          { $set: { subscriptionTokenBalance } },
+          { new: true, session },
+        );
+
+        if (!updatedUser) {
+          await session.abortTransaction();
+          return;
+        }
+
+        await this.tokenTransactionModel.create(
+          [
+            {
+              userId: updatedUser._id,
+              type: 'credit',
+              amount: subscriptionTokenBalance,
+              reason: 'subscription_topup',
+              referenceId,
+              balanceAfter:
+                (updatedUser.subscriptionTokenBalance || 0) +
+                (updatedUser.topUpTokenBalance || 0),
+            },
+          ],
+          { session },
+        );
+
+        await session.commitTransaction();
+      } catch (e: any) {
+        await session.abortTransaction();
+        if (e?.code === 11000) {
+          return;
+        }
+        throw e;
+      } finally {
+        await session.endSession();
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Reconcile subscription token deposit failed for user ${user._id}: ${error?.message || 'Unknown error'}`,
+      );
+    }
+  }
 
   /**
    * Creates a Stripe subscription for a user.
@@ -593,6 +710,11 @@ export class SubscriptionService {
       };
 
       await this.userModel.findByIdAndUpdate(user._id, updateData);
+
+      await this.reconcileLatestSubscriptionTokenDeposit({
+        user,
+        stripeSubscription,
+      });
       this.logger.log(
         `Successfully synced subscription data for user ${user._id}`,
       );
